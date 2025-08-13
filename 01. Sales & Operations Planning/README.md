@@ -57,13 +57,13 @@ While 97.3% service level might seem strong, the **monthly breakdown** shows:
 
 ### 1. Historical Demand vs. Supply Analysis
 
-**Visual 1 – Historical Demand & Supply Trends**  
+
 ![Historical Demand vs Supply](Image/Historical Demand v Supply '22-'24.png)
 
 - **Demand seasonality:** Recurring peaks around **Feb–Apr** and **Aug–Sep**, likely linked to promotional, cultural, or weather-driven consumption patterns.  
 - **Supply seasonality:** Similar but often **lags demand by 1 month**, suggesting supply reacts to earlier demand rather than anticipating it.  
 
-**Visual 2 – Historical Service Levels**  
+
 ![Historical Service Levels](image/Historical%20Demand%20v%20Supply%20'22-'24.png)  
 
 - Historically near or slightly above 100%, but forecast for 2025 shows multiple months dropping into the **low 90s or high 80s**.
