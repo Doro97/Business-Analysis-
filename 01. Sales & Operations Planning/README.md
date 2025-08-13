@@ -64,7 +64,7 @@ While 97.3% service level might seem strong, the **monthly breakdown** shows:
 - **Supply seasonality:** Similar but often **lags demand by 1 month**, suggesting supply reacts to earlier demand rather than anticipating it.  
 
 
-![Historical Service Levels](image/ServiceLevel.png)  
+![Historical Service Levels](Image/ServiceLevel.png)  
 
 - Historically near or slightly above 100%, but forecast for 2025 shows multiple months dropping into the **low 90s or high 80s**.
 
@@ -73,7 +73,7 @@ While 97.3% service level might seem strong, the **monthly breakdown** shows:
 ### 2. Forecasted Risks
 
 **Visual 3 – Forecasted Demand vs Supply (Jul 2025–Dec 2026)**  
-![Forecasted Demand vs Supply](image/18-month-forecast.png)
+![Forecasted Demand vs Supply](Image/18-month-forecast.png)
 
 - **Deficit months:** Jun–Sep 2026 are largest risk, with up to **21,943 units gap (Jun 2026)**.  
 - **Surplus months:** Oct–Dec 2025 & Oct–Dec 2026 produce modest overstock (8–13k units/month).  
