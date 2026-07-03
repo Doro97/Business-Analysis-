@@ -1,29 +1,7 @@
+unmatched = incidents_joined[incidents_joined["technology"].isna()]
+print(unmatched.shape)
 
-# 2a. Verify technology really is unique per task (sanity check)
-tech_check = time_card.groupby("task")["technology"].nunique()
-print("Tasks with >1 technology:", (tech_check > 1).sum())
-
-# Technology: safe to take the first (or only) value per task
-tech_per_task = (
-    time_card
-    .drop_duplicates(subset="task")
-    [["task", "technology"]]
-)
-
-# Specialisation: varies by user, so pick the one with the most time_worked
-# logged against that ticket (i.e. whoever did the most work "owns" the
-# specialisation label)
-spec_per_task = (
-    time_card
-    .sort_values("time_worked", ascending=False)
-    .drop_duplicates(subset="task", keep="first")
-    [["task", "specialisation"]]
-)
-
-tc_agg = tech_per_task.merge(spec_per_task, on="task")
-
-incidents_joined = incidents.merge(tc_agg, left_on="number", right_on="task", how="left")
-incidents_joined.drop(columns=["task"], inplace=True)
-
-match_rate = incidents_joined["technology"].notna().mean()
-print(f"Match rate: {match_rate:.1%}")
+# Is it random, or concentrated somewhere? Check a few angles:
+print(unmatched["state"].value_counts(normalize=True))
+print(unmatched["business_service"].value_counts(normalize=True).head())
+print(unmatched["opened"].dt.to_period("M").value_counts().sort_index())
