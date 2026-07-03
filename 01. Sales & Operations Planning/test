@@ -3,29 +3,75 @@ import numpy as np
 
 ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
 
-# --- Holdout split: last 6 weeks for validation ---
 holdout_n = 6
 train = ts.iloc[:-holdout_n]
 test = ts.iloc[-holdout_n:]
 
-# --- Candidate 1: Holt's linear trend, no seasonality ---
+# Trend-only, damped (damping avoids the forecast running away linearly
+# forever, which matters over a 13-week horizon)
 model_trend = ExponentialSmoothing(
     train, trend="add", damped_trend=True, seasonal=None
 ).fit()
 pred_trend = model_trend.forecast(holdout_n)
 
-# --- Candidate 2: trend + weekly seasonality (period=52, needs >=2 cycles
-# ideally, so treat this as experimental with only 62 weeks) ---
-model_seasonal = ExponentialSmoothing(
-    train, trend="add", damped_trend=True,
-    seasonal="add", seasonal_periods=52
-).fit()
-pred_seasonal = model_seasonal.forecast(holdout_n)
-
-# --- Compare on holdout ---
 def mape(actual, pred):
     return np.mean(np.abs((actual - pred) / actual)) * 100
 
-print("Trend-only MAPE:   ", round(mape(test.values, pred_trend.values), 1))
-print("Trend+Seasonal MAPE:", round(mape(test.values, pred_seasonal.values), 1))
-print(pd.DataFrame({"actual": test, "trend_only": pred_trend, "trend_seasonal": pred_seasonal}))
+print("Trend-only MAPE:", round(mape(test.values, pred_trend.values), 1))
+print(pd.DataFrame({"actual": test, "forecast": pred_trend}))
+
+
+# Baseline: weighted moving average with linear trend adjustment
+# (average of last 8 weeks, trend = slope of last 8 weeks' linear fit)
+recent = train.iloc[-8:]
+x = np.arange(len(recent))
+slope, intercept = np.polyfit(x, recent.values, 1)
+baseline_level = recent.mean()
+
+# simple trend-projected baseline for comparison
+baseline_pred = pd.Series(
+    [intercept + slope * (len(recent) + i) for i in range(holdout_n)],
+    index=test.index
+)
+print("Baseline MAPE:", round(mape(test.values, baseline_pred.values), 1))
+
+
+from sklearn.metrics import mean_absolute_error
+
+mae_trend = mean_absolute_error(test.values, pred_trend.values)
+mae_baseline = mean_absolute_error(test.values, baseline_pred.values)
+
+print("Trend-only  -> MAPE: {:.1f}%  MAE: {:.1f} tickets".format(
+    mape(test.values, pred_trend.values), mae_trend))
+print("Baseline    -> MAPE: {:.1f}%  MAE: {:.1f} tickets".format(
+    mape(test.values, baseline_pred.values), mae_baseline))
+
+
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Full history in grey for context
+ax.plot(ts.index, ts.values, color="grey", alpha=0.5, label="Full history", linewidth=1)
+
+# Train/test actuals
+ax.plot(train.index, train.values, color="black", label="Train (actual)", linewidth=1.5)
+ax.plot(test.index, test.values, color="black", linestyle="--", marker="o",
+        label="Test (actual)", linewidth=1.5)
+
+# Predictions over holdout
+ax.plot(test.index, pred_trend.values, color="tab:blue", marker="s",
+        label=f"Holt's trend (MAE={mae_trend:.1f})", linewidth=1.5)
+ax.plot(test.index, baseline_pred.values, color="tab:orange", marker="^",
+        label=f"Baseline (MAE={mae_baseline:.1f})", linewidth=1.5)
+
+ax.axvline(test.index[0], color="red", linestyle=":", alpha=0.6, label="Train/test split")
+ax.set_title("Weekly Incident Volume: Actual vs Predicted (Holdout)")
+ax.set_xlabel("Week")
+ax.set_ylabel("Ticket Count")
+ax.legend()
+ax.grid(alpha=0.3)
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig("holdout_comparison.png", dpi=150)
+plt.show()
