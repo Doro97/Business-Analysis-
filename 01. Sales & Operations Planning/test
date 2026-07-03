@@ -1,32 +1,60 @@
+last_date = pd.to_datetime(weekly_sr_seg['week_start'].max())
+forecast_dates = pd.date_range(
+    start=last_date + pd.Timedelta(weeks=1),
+    periods=13,
+    freq='W'
+)
+pxn_date = datetime.today().strftime('%Y-%m-%d')
+
+FEATURES = ['lag_1', 'lag_2', 'month', 'rolling_4w', 'above_avg',
+            'is_spike', 'is_dip']
+
+forecast_rows = []
+
 for (tech, spec), seg_info in segment_best_models_sr.items():
-    try:
-        model_name = seg_info['model_name']
-        model = seg_info['model']
-        feature_names = seg_info['X_train'].columns.tolist()
-        X_test = seg_info['X_test']
+    model = seg_info['model']
+    
+    # Start with full segment history
+    full_hist = weekly_sr_seg[
+        (weekly_sr_seg['technology'] == tech) &
+        (weekly_sr_seg['specialisation'] == spec)
+    ].sort_values('week_start')['sr_count'].values.tolist()
 
-        # Get coefficients/importances directly from model
-        if model_name in ['Ridge', 'Lasso', 'LinearRegression']:
-            importances = np.abs(model.named_steps['model'].coef_)
-        elif model_name == 'Huber':
-            importances = np.abs(model.named_steps['model'].coef_)
-        elif model_name in ['RandomForest', 'GradientBoosting']:
-            importances = model.feature_importances_
-        else:
-            continue
+    week_forecasts = []
 
-        # Plot
-        importance_df = pd.DataFrame({
-            'feature': feature_names,
-            'importance': importances
-        }).sort_values('importance', ascending=True)
+    for i, date in enumerate(forecast_dates):
+        hist = pd.Series(full_hist)
 
-        plt.figure(figsize=(8, 4))
-        plt.barh(importance_df['feature'], importance_df['importance'])
-        plt.title(f'{tech} | {spec} — Feature Importance (Best: {model_name}, MAE: {seg_info["MAE"]})')
-        plt.xlabel('Absolute Coefficient / Importance')
-        plt.tight_layout()
-        plt.show()
+        roll_4   = hist.iloc[-4:].mean() if len(hist) >= 4 else hist.mean()
+        roll_8   = hist.iloc[-8:].mean() if len(hist) >= 8 else hist.mean()
+        std_8    = hist.iloc[-8:].std()  if len(hist) >= 8 else 0
 
-    except Exception as e:
-        print(f"Failed for {tech} | {spec}: {e}")
+        row = {
+            'lag_1':      hist.iloc[-1],
+            'lag_2':      hist.iloc[-2] if len(hist) >= 2 else hist.iloc[-1],
+            'month':      date.month,
+            'rolling_4w': roll_4,
+            'above_avg':  int(hist.iloc[-1] > roll_4),
+            'is_spike':   int(hist.iloc[-1] > roll_8 + 1.5 * std_8),
+            'is_dip':     int(hist.iloc[-1] < roll_8 - 1.5 * std_8)
+        }
+
+        row_df = pd.DataFrame([row])[FEATURES].astype(float)
+        pred = max(0, round(model.predict(row_df)[0]))
+        week_forecasts.append(pred)
+        full_hist.append(pred)
+
+    forecast_rows.append({
+        'technology':     tech,
+        'specialisation': spec,
+        **{f'week_{i+1}': v for i, v in enumerate(week_forecasts)},
+        'pxn_date':       pxn_date
+    })
+
+forecast_df = pd.DataFrame(forecast_rows).sort_values(
+    ['technology', 'specialisation']
+).reset_index(drop=True)
+
+print(forecast_df.to_string(index=False))
+
+
