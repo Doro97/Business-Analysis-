@@ -1,26 +1,32 @@
 for (tech, spec), seg_info in segment_best_models_sr.items():
     try:
-        feature_names = seg_info['X_train'].columns.tolist()
         model_name = seg_info['model_name']
         model = seg_info['model']
+        feature_names = seg_info['X_train'].columns.tolist()
+        X_test = seg_info['X_test']
 
-        # For Pipeline models, use the full pipeline predict
-        # Pass DataFrame to maintain feature names
-        explainer = shap.Explainer(
-            model.predict,
-            seg_info['X_train'],
-            algorithm='permutation',
-            feature_names=feature_names
-        )
-        shap_values = explainer(seg_info['X_test'])
+        # Get coefficients/importances directly from model
+        if model_name in ['Ridge', 'Lasso', 'LinearRegression']:
+            importances = np.abs(model.named_steps['model'].coef_)
+        elif model_name == 'Huber':
+            importances = np.abs(model.named_steps['model'].coef_)
+        elif model_name in ['RandomForest', 'GradientBoosting']:
+            importances = model.feature_importances_
+        else:
+            continue
 
-        plt.figure(figsize=(10, 4))
-        shap.summary_plot(shap_values, seg_info['X_test'],
-                          feature_names=feature_names,
-                          plot_type='bar', show=False)
-        plt.title(f'SHAP — {tech} | {spec} (Best: {model_name}, MAE: {seg_info["MAE"]})')
+        # Plot
+        importance_df = pd.DataFrame({
+            'feature': feature_names,
+            'importance': importances
+        }).sort_values('importance', ascending=True)
+
+        plt.figure(figsize=(8, 4))
+        plt.barh(importance_df['feature'], importance_df['importance'])
+        plt.title(f'{tech} | {spec} — Feature Importance (Best: {model_name}, MAE: {seg_info["MAE"]})')
+        plt.xlabel('Absolute Coefficient / Importance')
         plt.tight_layout()
         plt.show()
 
     except Exception as e:
-        print(f"SHAP failed for {tech} | {spec}: {e}")
+        print(f"Failed for {tech} | {spec}: {e}")
