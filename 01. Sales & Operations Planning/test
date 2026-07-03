@@ -1,27 +1,24 @@
 for (tech, spec), seg_info in segment_best_models_sr.items():
     try:
+        feature_names = seg_info['X_train'].columns.tolist()
+        model_name = seg_info['model_name']
+        model = seg_info['model']
+
+        # For Pipeline models, use the full pipeline predict
+        # Pass DataFrame to maintain feature names
         explainer = shap.Explainer(
-            seg_info['model'].predict,
-            seg_info['X_train'].values,  # pass as numpy array
-            algorithm='permutation'
+            model.predict,
+            seg_info['X_train'],
+            algorithm='permutation',
+            feature_names=feature_names
         )
-        shap_values = explainer(seg_info['X_test'].values)
+        shap_values = explainer(seg_info['X_test'])
 
-        fig, axes = plt.subplots(1, 2, figsize=(16, 4))
-
-        plt.sca(axes[0])
+        plt.figure(figsize=(10, 4))
         shap.summary_plot(shap_values, seg_info['X_test'],
+                          feature_names=feature_names,
                           plot_type='bar', show=False)
-        axes[0].set_title(f'{tech} | {spec} — Feature Importance')
-
-        plt.sca(axes[1])
-        shap.summary_plot(shap_values, seg_info['X_test'], show=False)
-        axes[1].set_title(f'{tech} | {spec} — Beeswarm')
-
-        plt.suptitle(
-            f'SHAP — {tech} | {spec} (Best: {seg_info["model_name"]}, MAE: {seg_info["MAE"]})',
-            fontsize=12, fontweight='bold'
-        )
+        plt.title(f'SHAP — {tech} | {spec} (Best: {model_name}, MAE: {seg_info["MAE"]})')
         plt.tight_layout()
         plt.show()
 
