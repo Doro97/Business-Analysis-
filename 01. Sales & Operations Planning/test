@@ -1,7 +1,4 @@
-unmatched = incidents_joined[incidents_joined["technology"].isna()]
-print(unmatched.shape)
-
-# Is it random, or concentrated somewhere? Check a few angles:
-print(unmatched["state"].value_counts(normalize=True))
-print(unmatched["business_service"].value_counts(normalize=True).head())
-print(unmatched["opened"].dt.to_period("M").value_counts().sort_index())
+# Quantify the lag effect explicitly
+by_month = incidents_joined.assign(month=incidents_joined["opened"].dt.to_period("M"))
+match_by_month = by_month.groupby("month")["technology"].apply(lambda s: s.notna().mean())
+print(match_by_month)
