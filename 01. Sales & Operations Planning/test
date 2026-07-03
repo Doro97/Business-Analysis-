@@ -1,34 +1,81 @@
-def recursive_forecast(model, history, n_steps, feature_cols):
-    """Forecast n_steps ahead, feeding predictions back in as lags."""
-    history = list(history)  # actual + predicted values as we go
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
+
+# ------------------------------------------------------------------
+# 0. Rebuild the cleaned weekly series (from Steps 3-4)
+# ------------------------------------------------------------------
+ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
+
+anomaly_mask = (ts.index >= "2026-04-20") & (ts.index <= "2026-05-18")
+rolling_median = ts.rolling(8, center=True, min_periods=4).median()
+ts_cleaned = ts.copy()
+ts_cleaned[anomaly_mask] = rolling_median[anomaly_mask]
+
+holdout_n = 6
+
+def mape(actual, pred):
+    return np.mean(np.abs((actual - pred) / actual)) * 100
+
+# ------------------------------------------------------------------
+# 1. Build lag-feature table from the cleaned series
+# ------------------------------------------------------------------
+reg_df = pd.DataFrame({"ticket_count": ts_cleaned})
+reg_df["lag_1"] = reg_df["ticket_count"].shift(1)
+reg_df["lag_2"] = reg_df["ticket_count"].shift(2)
+reg_df["lag_3"] = reg_df["ticket_count"].shift(3)
+reg_df["rolling_mean_4"] = reg_df["ticket_count"].shift(1).rolling(4).mean()
+reg_df["trend_idx"] = np.arange(len(reg_df))
+reg_df = reg_df.dropna()
+
+feature_cols = ["lag_1", "lag_2", "lag_3", "rolling_mean_4", "trend_idx"]
+X = reg_df[feature_cols]
+y = reg_df["ticket_count"]
+
+X_train, X_test = X.iloc[:-holdout_n], X.iloc[-holdout_n:]
+y_train, y_test = y.iloc[:-holdout_n], y.iloc[-holdout_n:]
+
+print("Train shape:", X_train.shape, "Test shape:", X_test.shape)
+
+# ------------------------------------------------------------------
+# 2. Fit models on TRAIN only
+# ------------------------------------------------------------------
+lin_model = LinearRegression().fit(X_train, y_train)
+rf_model = RandomForestRegressor(n_estimators=200, max_depth=4, random_state=42).fit(X_train, y_train)
+
+# ------------------------------------------------------------------
+# 3. Recursive forecasting over the holdout horizon
+#    (feed each prediction back in as the next lag, since in a real
+#    forecast we don't know future actuals)
+# ------------------------------------------------------------------
+def recursive_forecast(model, seed_history, n_steps, feature_cols):
+    history = list(seed_history)
     preds = []
     for step in range(n_steps):
-        lag_1 = history[-1]
-        lag_2 = history[-2]
-        lag_3 = history[-3]
+        lag_1, lag_2, lag_3 = history[-1], history[-2], history[-3]
         rolling_mean_4 = np.mean(history[-4:])
-        trend_idx = len(history)  # continues the trend index from training
+        trend_idx = len(history)
         X_next = pd.DataFrame([{
             "lag_1": lag_1, "lag_2": lag_2, "lag_3": lag_3,
             "rolling_mean_4": rolling_mean_4, "trend_idx": trend_idx
         }])[feature_cols]
         pred = model.predict(X_next)[0]
         preds.append(pred)
-        history.append(pred)  # feed prediction back in for next step
+        history.append(pred)
     return np.array(preds)
 
-feature_cols = ["lag_1", "lag_2", "lag_3", "rolling_mean_4", "trend_idx"]
-
-# Fit on training data only (same split as Holt's/ARIMA comparison)
-lin_model = LinearRegression().fit(X_train, y_train)
-rf_model = RandomForestRegressor(n_estimators=200, max_depth=4, random_state=42).fit(X_train, y_train)
-
-# Recursive forecast over the holdout horizon, using only pre-holdout actuals as seed
+# seed with the last 4 actual (pre-holdout) values
 seed_history = ts_cleaned.iloc[:-holdout_n].iloc[-4:].tolist()
 
 pred_lin_recursive = recursive_forecast(lin_model, seed_history, holdout_n, feature_cols)
 pred_rf_recursive = recursive_forecast(rf_model, seed_history, holdout_n, feature_cols)
 
+# ------------------------------------------------------------------
+# 4. Evaluate against actual holdout values
+# ------------------------------------------------------------------
 mae_lin = mean_absolute_error(y_test.values, pred_lin_recursive)
 mae_rf = mean_absolute_error(y_test.values, pred_rf_recursive)
 mape_lin = mape(y_test.values, pred_lin_recursive)
@@ -44,21 +91,21 @@ print(pd.DataFrame({
     "random_forest": pred_rf_recursive
 }, index=y_test.index))
 
-
-
-
-
+# ------------------------------------------------------------------
+# 5. Plot comparison
+# ------------------------------------------------------------------
+train_c = ts_cleaned.iloc[:-holdout_n]
+test_c = ts_cleaned.iloc[-holdout_n:]
 
 fig, ax = plt.subplots(figsize=(12, 6))
 ax.plot(train_c.index[-15:], train_c.values[-15:], color="black", label="Train (actual)")
 ax.plot(test_c.index, test_c.values, color="black", linestyle="--", marker="o", label="Test (actual)")
-ax.plot(test_c.index, pred_trend_c.values, color="tab:blue", marker="s", label=f"Holt's (MAE=10.1)")
 ax.plot(test_c.index, pred_lin_recursive, color="tab:green", marker="^", label=f"Linear Reg (MAE={mae_lin:.1f})")
 ax.plot(test_c.index, pred_rf_recursive, color="tab:purple", marker="D", label=f"Random Forest (MAE={mae_rf:.1f})")
 ax.axvline(test_c.index[0], color="red", linestyle=":", alpha=0.6)
 ax.legend()
 ax.grid(alpha=0.3)
-ax.set_title("Model Comparison on Holdout (Recursive Forecasting)")
+ax.set_title("Regression Models on Holdout (Recursive Forecasting)")
 plt.tight_layout()
-plt.savefig("model_comparison.png", dpi=150)
+plt.savefig("regression_comparison.png", dpi=150)
 plt.show()
