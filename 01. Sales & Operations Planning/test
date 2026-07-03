@@ -1,9 +1,54 @@
-fo_func = weekly_sr_seg[
-    (weekly_sr_seg['technology'] == 'Dynamics 365 FO') &
-    (weekly_sr_seg['specialisation'] == 'FO Functional')
-].sort_values('week_start').reset_index(drop=True)
+for (tech, spec), seg_info in segment_best_models_sr.items():
+    try:
+        model = seg_info['model']
+        model_name = seg_info['model_name']
+        X_train = seg_info['X_train']
+        X_test = seg_info['X_test']
 
-print(f"Total weeks: {len(fo_func)}")
-print(f"Train mean: {fo_func.iloc[:-13]['sr_count'].mean():.1f}")
-print(f"Test mean:  {fo_func.iloc[-13:]['sr_count'].mean():.1f}")
-print(fo_func.tail(20).to_string(index=False))
+        # Choose explainer based on model type
+        if model_name in ['Ridge', 'Lasso', 'LinearRegression']:
+            explainer = shap.LinearExplainer(
+                model.named_steps['model'],
+                X_train
+            )
+            shap_values = explainer.shap_values(X_test)
+            shap_exp = shap.Explanation(
+                values=shap_values,
+                data=X_test.values,
+                feature_names=X_test.columns.tolist()
+            )
+
+        elif model_name in ['RandomForest', 'GradientBoosting']:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test)
+            shap_exp = shap.Explanation(
+                values=shap_values,
+                data=X_test.values,
+                feature_names=X_test.columns.tolist()
+            )
+
+        else:  # Huber — use permutation
+            explainer = shap.Explainer(
+                model.predict, X_train, algorithm='permutation'
+            )
+            shap_exp = explainer(X_test)
+
+        fig, axes = plt.subplots(1, 2, figsize=(16, 4))
+
+        plt.sca(axes[0])
+        shap.summary_plot(shap_exp, X_test, plot_type='bar', show=False)
+        axes[0].set_title(f'{tech} | {spec} — Feature Importance')
+
+        plt.sca(axes[1])
+        shap.summary_plot(shap_exp, X_test, show=False)
+        axes[1].set_title(f'{tech} | {spec} — Beeswarm')
+
+        plt.suptitle(
+            f'SHAP — {tech} | {spec} (Best: {model_name}, MAE: {seg_info["MAE"]})',
+            fontsize=12, fontweight='bold'
+        )
+        plt.tight_layout()
+        plt.show()
+
+    except Exception as e:
+        print(f"SHAP failed for {tech} | {spec}: {e}")
