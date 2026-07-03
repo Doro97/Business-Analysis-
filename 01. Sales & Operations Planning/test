@@ -1,0 +1,94 @@
+segment_best_models_sr = {}
+segment_results_sr = []
+
+for (tech, spec), grp in weekly_sr_seg.groupby(['technology', 'specialisation']):
+    grp = grp.sort_values('week_start').reset_index(drop=True)
+    
+    # Build features
+    grp['lag_1']       = grp['sr_count'].shift(1)
+    grp['month']       = pd.to_datetime(grp['week_start']).dt.month
+    grp['rolling_4w']  = grp['sr_count'].shift(1).rolling(4).mean()
+    grp['above_avg']   = (grp['sr_count'].shift(1) > grp['rolling_4w']).astype(int)
+    
+    rolling_std  = grp['sr_count'].shift(1).rolling(8).std()
+    rolling_mean = grp['sr_count'].shift(1).rolling(8).mean()
+    grp['is_spike']    = (grp['sr_count'].shift(1) > rolling_mean + 1.5 * rolling_std).astype(int)
+    grp['is_dip']      = (grp['sr_count'].shift(1) < rolling_mean - 1.5 * rolling_std).astype(int)
+    grp['level_shift'] = (pd.to_datetime(grp['week_start']) >= '2026-03-01').astype(int)
+    grp['trend']       = np.arange(len(grp))
+    grp = grp.dropna()
+    
+    if len(grp) < 15:
+        print(f"Skipping {tech} | {spec} — only {len(grp)} usable rows")
+        continue
+    
+    FEATURES = ['lag_1', 'month', 'rolling_4w', 'above_avg', 
+                'is_spike', 'is_dip', 'level_shift', 'trend']
+    X = grp[FEATURES].astype(float)
+    y = grp['sr_count'].astype(float)
+    
+    X_train, X_test = X.iloc[:-13], X.iloc[-13:]
+    y_train, y_test = y.iloc[:-13], y.iloc[-13:]
+    
+    if len(X_train) < 5:
+        print(f"Skipping {tech} | {spec} — insufficient training rows")
+        continue
+    
+    best_mae       = np.inf
+    best_name      = None
+    best_preds     = None
+    best_model_obj = None
+    
+    for name, model in models.items():
+        try:
+            model.fit(X_train, y_train)
+            preds = np.maximum(model.predict(X_test), 0).round()
+            mae   = mean_absolute_error(y_test, preds)
+            
+            segment_results_sr.append({
+                'technology':     tech,
+                'specialisation': spec,
+                'model':          name,
+                'MAE':            round(mae, 2),
+                'RMSE':           round(np.sqrt(mean_squared_error(y_test, preds)), 2),
+                'Bias':           round(np.mean(preds - y_test.values), 2),
+                'avg_actual':     round(y_test.mean(), 2)
+            })
+            
+            if mae < best_mae:
+                best_mae       = mae
+                best_name      = name
+                best_preds     = preds
+                best_model_obj = model
+                
+        except Exception as e:
+            print(f"{tech} | {spec} | {name} failed: {e}")
+    
+    if best_model_obj is not None:
+        segment_best_models_sr[(tech, spec)] = {
+            'model':       best_model_obj,
+            'model_name':  best_name,
+            'X_train':     X_train,
+            'X_test':      X_test,
+            'y_train':     y_train,
+            'y_test':      y_test,
+            'best_preds':  best_preds,
+            'MAE':         round(best_mae, 2),
+            'Bias':        round(np.mean(best_preds - y_test.values), 2),
+            'avg_actual':  round(y_test.mean(), 2)
+        }
+
+# --- Summary table ---
+summary_sr = pd.DataFrame([
+    {
+        'technology':     k[0],
+        'specialisation': k[1],
+        'best_model':     v['model_name'],
+        'MAE':            v['MAE'],
+        'avg_actual':     v['avg_actual'],
+        'Bias':           v['Bias']
+    }
+    for k, v in segment_best_models_sr.items()
+]).sort_values('MAE', ascending=False)
+
+print(summary_sr.to_string(index=False))
