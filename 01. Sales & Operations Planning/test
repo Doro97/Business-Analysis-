@@ -1,50 +1,25 @@
 for (tech, spec), seg_info in segment_best_models_sr.items():
     try:
-        model = seg_info['model']
-        model_name = seg_info['model_name']
-        X_train = seg_info['X_train']
-        X_test = seg_info['X_test']
-
-        # Choose explainer based on model type
-        if model_name in ['Ridge', 'Lasso', 'LinearRegression']:
-            explainer = shap.LinearExplainer(
-                model.named_steps['model'],
-                X_train
-            )
-            shap_values = explainer.shap_values(X_test)
-            shap_exp = shap.Explanation(
-                values=shap_values,
-                data=X_test.values,
-                feature_names=X_test.columns.tolist()
-            )
-
-        elif model_name in ['RandomForest', 'GradientBoosting']:
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_test)
-            shap_exp = shap.Explanation(
-                values=shap_values,
-                data=X_test.values,
-                feature_names=X_test.columns.tolist()
-            )
-
-        else:  # Huber — use permutation
-            explainer = shap.Explainer(
-                model.predict, X_train, algorithm='permutation'
-            )
-            shap_exp = explainer(X_test)
+        explainer = shap.Explainer(
+            seg_info['model'].predict,
+            seg_info['X_train'].values,  # pass as numpy array
+            algorithm='permutation'
+        )
+        shap_values = explainer(seg_info['X_test'].values)
 
         fig, axes = plt.subplots(1, 2, figsize=(16, 4))
 
         plt.sca(axes[0])
-        shap.summary_plot(shap_exp, X_test, plot_type='bar', show=False)
+        shap.summary_plot(shap_values, seg_info['X_test'],
+                          plot_type='bar', show=False)
         axes[0].set_title(f'{tech} | {spec} — Feature Importance')
 
         plt.sca(axes[1])
-        shap.summary_plot(shap_exp, X_test, show=False)
+        shap.summary_plot(shap_values, seg_info['X_test'], show=False)
         axes[1].set_title(f'{tech} | {spec} — Beeswarm')
 
         plt.suptitle(
-            f'SHAP — {tech} | {spec} (Best: {model_name}, MAE: {seg_info["MAE"]})',
+            f'SHAP — {tech} | {spec} (Best: {seg_info["model_name"]}, MAE: {seg_info["MAE"]})',
             fontsize=12, fontweight='bold'
         )
         plt.tight_layout()
