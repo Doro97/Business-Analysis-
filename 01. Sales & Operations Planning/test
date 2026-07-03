@@ -1,4 +1,9 @@
-# Quantify the lag effect explicitly
-by_month = incidents_joined.assign(month=incidents_joined["opened"].dt.to_period("M"))
-match_by_month = by_month.groupby("month")["technology"].apply(lambda s: s.notna().mean())
-print(match_by_month)
+# Flag the anomalous months explicitly rather than silently absorbing them
+anomalous_months = ["2026-04", "2026-05"]
+
+incidents_joined["opened_month"] = incidents_joined["opened"].dt.to_period("M").astype(str)
+incidents_joined["logging_anomaly_flag"] = incidents_joined["opened_month"].isin(anomalous_months)
+
+# Overall ticket counts (Step 3) are UNAFFECTED by this — every incident counts
+# once regardless of whether it matched to a technology. The anomaly only
+# affects the technology/specialisation SPLIT, not total volume.
