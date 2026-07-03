@@ -1,57 +1,64 @@
-# 1. Cap the anomalous weeks using surrounding rolling median
-anomaly_mask = (ts.index >= "2026-04-20") & (ts.index <= "2026-05-18")
+def recursive_forecast(model, history, n_steps, feature_cols):
+    """Forecast n_steps ahead, feeding predictions back in as lags."""
+    history = list(history)  # actual + predicted values as we go
+    preds = []
+    for step in range(n_steps):
+        lag_1 = history[-1]
+        lag_2 = history[-2]
+        lag_3 = history[-3]
+        rolling_mean_4 = np.mean(history[-4:])
+        trend_idx = len(history)  # continues the trend index from training
+        X_next = pd.DataFrame([{
+            "lag_1": lag_1, "lag_2": lag_2, "lag_3": lag_3,
+            "rolling_mean_4": rolling_mean_4, "trend_idx": trend_idx
+        }])[feature_cols]
+        pred = model.predict(X_next)[0]
+        preds.append(pred)
+        history.append(pred)  # feed prediction back in for next step
+    return np.array(preds)
 
-rolling_median = ts.rolling(8, center=True, min_periods=4).median()
-ts_cleaned = ts.copy()
-ts_cleaned[anomaly_mask] = rolling_median[anomaly_mask]
+feature_cols = ["lag_1", "lag_2", "lag_3", "rolling_mean_4", "trend_idx"]
 
-print(pd.DataFrame({"raw": ts[anomaly_mask], "cleaned": ts_cleaned[anomaly_mask]}))
+# Fit on training data only (same split as Holt's/ARIMA comparison)
+lin_model = LinearRegression().fit(X_train, y_train)
+rf_model = RandomForestRegressor(n_estimators=200, max_depth=4, random_state=42).fit(X_train, y_train)
 
-# 2. Re-split train/test on the CLEANED series (same holdout window as before)
-train_c = ts_cleaned.iloc[:-holdout_n]
-test_c = ts_cleaned.iloc[-holdout_n:]   # note: test set is also cleaned now,
-                                         # so we're validating against a fair baseline
+# Recursive forecast over the holdout horizon, using only pre-holdout actuals as seed
+seed_history = ts_cleaned.iloc[:-holdout_n].iloc[-4:].tolist()
 
-# 3. Re-fit Holt's damped trend on cleaned data
-model_trend_c = ExponentialSmoothing(
-    train_c, trend="add", damped_trend=True, seasonal=None
-).fit()
-pred_trend_c = model_trend_c.forecast(holdout_n)
+pred_lin_recursive = recursive_forecast(lin_model, seed_history, holdout_n, feature_cols)
+pred_rf_recursive = recursive_forecast(rf_model, seed_history, holdout_n, feature_cols)
 
-mae_trend_c = mean_absolute_error(test_c.values, pred_trend_c.values)
-mape_trend_c = mape(test_c.values, pred_trend_c.values)
+mae_lin = mean_absolute_error(y_test.values, pred_lin_recursive)
+mae_rf = mean_absolute_error(y_test.values, pred_rf_recursive)
+mape_lin = mape(y_test.values, pred_lin_recursive)
+mape_rf = mape(y_test.values, pred_rf_recursive)
 
-print(f"Cleaned Holt's -> MAPE: {mape_trend_c:.1f}%  MAE: {mae_trend_c:.1f} tickets")
-print(pd.DataFrame({"actual": test_c, "forecast": pred_trend_c}))
+print(f"Linear Regression (recursive) -> MAE: {mae_lin:.1f}  MAPE: {mape_lin:.1f}%")
+print(f"Random Forest (recursive)     -> MAE: {mae_rf:.1f}  MAPE: {mape_rf:.1f}%")
+print(f"Holt's trend (for reference)  -> MAE: 10.1")
 
-
-
-
-
-
+print(pd.DataFrame({
+    "actual": y_test.values,
+    "linear_reg": pred_lin_recursive,
+    "random_forest": pred_rf_recursive
+}, index=y_test.index))
 
 
-fig, axes = plt.subplots(2, 1, figsize=(12, 10))
 
-# Top: raw vs cleaned, full history
-axes[0].plot(ts.index, ts.values, color="lightcoral", label="Raw (with spike)", linewidth=1)
-axes[0].plot(ts_cleaned.index, ts_cleaned.values, color="black", label="Cleaned", linewidth=1.5)
-axes[0].axvspan(ts.index[anomaly_mask][0], ts.index[anomaly_mask][-1],
-                color="yellow", alpha=0.2, label="Capped window")
-axes[0].set_title("Weekly Ticket Volume: Raw vs Cleaned")
-axes[0].legend()
-axes[0].grid(alpha=0.3)
 
-# Bottom: holdout fit on cleaned data
-axes[1].plot(train_c.index, train_c.values, color="black", label="Train (actual)", linewidth=1.5)
-axes[1].plot(test_c.index, test_c.values, color="black", linestyle="--", marker="o", label="Test (actual)")
-axes[1].plot(test_c.index, pred_trend_c.values, color="tab:blue", marker="s",
-             label=f"Holt's trend (MAE={mae_trend_c:.1f})")
-axes[1].axvline(test_c.index[0], color="red", linestyle=":", alpha=0.6)
-axes[1].set_title("Holdout Validation on Cleaned Series")
-axes[1].legend()
-axes[1].grid(alpha=0.3)
 
+
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(train_c.index[-15:], train_c.values[-15:], color="black", label="Train (actual)")
+ax.plot(test_c.index, test_c.values, color="black", linestyle="--", marker="o", label="Test (actual)")
+ax.plot(test_c.index, pred_trend_c.values, color="tab:blue", marker="s", label=f"Holt's (MAE=10.1)")
+ax.plot(test_c.index, pred_lin_recursive, color="tab:green", marker="^", label=f"Linear Reg (MAE={mae_lin:.1f})")
+ax.plot(test_c.index, pred_rf_recursive, color="tab:purple", marker="D", label=f"Random Forest (MAE={mae_rf:.1f})")
+ax.axvline(test_c.index[0], color="red", linestyle=":", alpha=0.6)
+ax.legend()
+ax.grid(alpha=0.3)
+ax.set_title("Model Comparison on Holdout (Recursive Forecasting)")
 plt.tight_layout()
-plt.savefig("cleaned_holdout_comparison.png", dpi=150)
+plt.savefig("model_comparison.png", dpi=150)
 plt.show()
