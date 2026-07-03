@@ -1,55 +1,31 @@
-# Week-start convention matching time_card's week_start (Monday-start)
-incidents_joined["week_start"] = (
-    incidents_joined["opened"] - pd.to_timedelta(incidents_joined["opened"].dt.weekday, unit="D")
-).dt.normalize()
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+import numpy as np
 
-weekly_total = (
-    incidents_joined
-    .groupby("week_start")
-    .size()
-    .rename("ticket_count")
-    .reset_index()
-    .sort_values("week_start")
-)
+ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
 
-print(weekly_total.tail(15))
+# --- Holdout split: last 6 weeks for validation ---
+holdout_n = 6
+train = ts.iloc[:-holdout_n]
+test = ts.iloc[-holdout_n:]
 
+# --- Candidate 1: Holt's linear trend, no seasonality ---
+model_trend = ExponentialSmoothing(
+    train, trend="add", damped_trend=True, seasonal=None
+).fit()
+pred_trend = model_trend.forecast(holdout_n)
 
-weekly_by_tech = (
-    incidents_joined
-    .groupby(["week_start", "technology"])
-    .size()
-    .rename("ticket_count")
-    .reset_index()
-)
+# --- Candidate 2: trend + weekly seasonality (period=52, needs >=2 cycles
+# ideally, so treat this as experimental with only 62 weeks) ---
+model_seasonal = ExponentialSmoothing(
+    train, trend="add", damped_trend=True,
+    seasonal="add", seasonal_periods=52
+).fit()
+pred_seasonal = model_seasonal.forecast(holdout_n)
 
-# pivot for a readable view
-tech_pivot = weekly_by_tech.pivot(index="week_start", columns="technology", values="ticket_count").fillna(0)
-print(tech_pivot.tail(10))
+# --- Compare on holdout ---
+def mape(actual, pred):
+    return np.mean(np.abs((actual - pred) / actual)) * 100
 
-weekly_by_spec = (
-    incidents_joined
-    .groupby(["week_start", "specialisation"])
-    .size()
-    .rename("ticket_count")
-    .reset_index()
-)
-
-spec_pivot = weekly_by_spec.pivot(index="week_start", columns="specialisation", values="ticket_count").fillna(0)
-print(spec_pivot.tail(10))
-
-
-
-# 1. How many weeks of history do we actually have?
-print(f"Weeks of history: {weekly_total.shape[0]}")
-print(f"Date range: {weekly_total['week_start'].min()} to {weekly_total['week_start'].max()}")
-
-# 2. Any gaps (weeks with zero tickets that might actually be missing data
-#    rather than a genuine quiet week)?
-full_range = pd.date_range(weekly_total["week_start"].min(), weekly_total["week_start"].max(), freq="W-MON")
-missing_weeks = set(full_range) - set(weekly_total["week_start"])
-print(f"Missing weeks: {sorted(missing_weeks)}")
-
-# 3. Does the total reconcile? sum of tech_pivot rows should equal weekly_total
-recon_check = tech_pivot.sum(axis=1) - weekly_total.set_index("week_start")["ticket_count"]
-print("Max reconciliation diff:", recon_check.abs().max())
+print("Trend-only MAPE:   ", round(mape(test.values, pred_trend.values), 1))
+print("Trend+Seasonal MAPE:", round(mape(test.values, pred_seasonal.values), 1))
+print(pd.DataFrame({"actual": test, "trend_only": pred_trend, "trend_seasonal": pred_seasonal}))
