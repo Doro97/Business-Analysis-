@@ -1,73 +1,95 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from sklearn.linear_model import Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
+import matplotlib.pyplot as plt
 
 # ------------------------------------------------------------------
-# 1. Rebuild cleaned weekly series (from weekly_total, Step 3)
+# 0. Starting point: ts_cleaned (from Step 4)
 # ------------------------------------------------------------------
-ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
-
-anomaly_mask = (ts.index >= "2026-04-20") & (ts.index <= "2026-05-18")
-rolling_median = ts.rolling(8, center=True, min_periods=4).median()
-ts_cleaned = ts.copy()
-ts_cleaned[anomaly_mask] = rolling_median[anomaly_mask]
-
 def mape(actual, pred):
     return np.mean(np.abs((actual - pred) / actual)) * 100
 
-# ------------------------------------------------------------------
-# 2. Holdout validation (6 weeks)
-# ------------------------------------------------------------------
-holdout_n = 6
-train_c = ts_cleaned.iloc[:-holdout_n]
-test_c = ts_cleaned.iloc[-holdout_n:]
-
-model_trend_c = ExponentialSmoothing(
-    train_c, trend="add", damped_trend=True, seasonal=None
-).fit()
-pred_trend_c = model_trend_c.forecast(holdout_n)
-
-mae_trend_c = mean_absolute_error(test_c.values, pred_trend_c.values)
-mape_trend_c = mape(test_c.values, pred_trend_c.values)
-print(f"Holdout validation -> MAE: {mae_trend_c:.1f}  MAPE: {mape_trend_c:.1f}%")
-print(pd.DataFrame({"actual": test_c, "forecast": pred_trend_c}))
+MAX_HORIZON = 13
+HOLDOUT_WEEKS = 6   # weeks used to validate, held out from training entirely
 
 # ------------------------------------------------------------------
-# 3. Refit on FULL cleaned series, generate final 13-week forecast
+# 1. Base feature set (self-features only for now — timecard features
+#    to be added later). Built once; reused per horizon.
 # ------------------------------------------------------------------
-final_model = ExponentialSmoothing(
-    ts_cleaned, trend="add", damped_trend=True, seasonal=None
-).fit()
+def build_base_features(ts):
+    df = pd.DataFrame({"y": ts})
+    df["lag_1"] = df["y"].shift(1)
+    df["lag_2"] = df["y"].shift(2)
+    df["lag_3"] = df["y"].shift(3)
+    df["lag_4"] = df["y"].shift(4)
+    df["rolling_mean_4"] = df["y"].shift(1).rolling(4).mean()
+    df["rolling_std_4"] = df["y"].shift(1).rolling(4).std()
+    df["trend_idx"] = np.arange(len(df))
+    return df
 
-forecast_13wk = final_model.forecast(13)
-
-resid_std = final_model.resid.std()
-forecast_df = pd.DataFrame({
-    "week_start": forecast_13wk.index,
-    "forecast": forecast_13wk.values,
-    "lower_80": (forecast_13wk.values - 1.28 * resid_std).clip(min=0),
-    "upper_80": forecast_13wk.values + 1.28 * resid_std,
-})
-print(forecast_df)
+base_df = build_base_features(ts_cleaned)
 
 # ------------------------------------------------------------------
-# 4. Plot: history + forecast with confidence band
+# 2. Direct multi-horizon dataset builder
+#    target(h) = value h weeks after the feature row's date
 # ------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(13, 6))
-ax.plot(ts_cleaned.index, ts_cleaned.values, color="black", label="History (cleaned)")
-ax.plot(forecast_df["week_start"], forecast_df["forecast"], color="tab:blue",
-        marker="o", label="13-week forecast")
-ax.fill_between(forecast_df["week_start"], forecast_df["lower_80"], forecast_df["upper_80"],
-                color="tab:blue", alpha=0.15, label="80% interval")
-ax.axvline(ts_cleaned.index[-1], color="red", linestyle=":", alpha=0.6)
-ax.set_title("Weekly Incident Volume: History + 13-Week Forecast (Holt's Damped Trend)")
-ax.set_xlabel("Week")
-ax.set_ylabel("Ticket Count")
-ax.legend()
-ax.grid(alpha=0.3)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig("final_13wk_forecast.png", dpi=150)
-plt.show()
+def build_horizon_dataset(base_df, horizon):
+    d = base_df.copy()
+    d["target"] = d["y"].shift(-horizon)
+    d = d.dropna()
+    feature_cols = [c for c in d.columns if c not in ("y", "target")]
+    return d[feature_cols], d["target"], feature_cols
+
+# ------------------------------------------------------------------
+# 3. Candidate models
+# ------------------------------------------------------------------
+def get_models():
+    return {
+        "Ridge": Pipeline([("scaler", StandardScaler()), ("model", Ridge(alpha=1.0))]),
+        "Lasso": Pipeline([("scaler", StandardScaler()), ("model", Lasso(alpha=1.0))]),
+        "RandomForest": RandomForestRegressor(n_estimators=200, max_depth=4, random_state=42),
+        "GradientBoosting": GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42),
+    }
+
+# ------------------------------------------------------------------
+# 4. Evaluate each model at EACH horizon (1..13), using a fair holdout
+#    -- train only on data available before the holdout window starts
+# ------------------------------------------------------------------
+results = []
+predictions = {name: [] for name in get_models()}
+actuals_by_horizon = []
+
+for h in range(1, MAX_HORIZON + 1):
+    X_h, y_h, feature_cols = build_horizon_dataset(base_df, h)
+
+    # last HOLDOUT_WEEKS rows (by target date) are held out for validation
+    X_train, y_train = X_h.iloc[:-HOLDOUT_WEEKS], y_h.iloc[:-HOLDOUT_WEEKS]
+    X_test, y_test = X_h.iloc[-HOLDOUT_WEEKS:], y_h.iloc[-HOLDOUT_WEEKS:]
+
+    if len(X_test) == 0:
+        continue
+
+    actuals_by_horizon.append(y_test.values[-1])  # last test row = the "h weeks ahead" point aligned to holdout end
+
+    for name, model in get_models().items():
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test.iloc[[-1]])[0]  # predict the single point matching horizon h
+        predictions[name].append(pred)
+
+# ------------------------------------------------------------------
+# 5. Score each model across all horizons against actuals
+# ------------------------------------------------------------------
+actuals_arr = np.array(actuals_by_horizon)
+for name, preds in predictions.items():
+    preds_arr = np.array(preds)
+    mae = mean_absolute_error(actuals_arr, preds_arr)
+    mp = mape(actuals_arr, preds_arr)
+    results.append({"model": name, "MAE": round(mae, 1), "MAPE": round(mp, 1)})
+
+results_df = pd.DataFrame(results).sort_values("MAE")
+print(results_df)
+print(f"\nHolt's benchmark -> MAE: 10.1  MAPE: 12.1%")
