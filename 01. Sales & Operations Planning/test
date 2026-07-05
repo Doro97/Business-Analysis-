@@ -8,10 +8,9 @@ from sklearn.metrics import mean_absolute_error
 import matplotlib.pyplot as plt
 
 # ------------------------------------------------------------------
-# 0. Rebuild the cleaned weekly series (from weekly_total, Step 3)
+# 0. Rebuild cleaned weekly series
 # ------------------------------------------------------------------
 ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
-
 anomaly_mask = (ts.index >= "2026-04-20") & (ts.index <= "2026-05-18")
 rolling_median = ts.rolling(8, center=True, min_periods=4).median()
 ts_cleaned = ts.astype(float).copy()
@@ -20,14 +19,14 @@ ts_cleaned[anomaly_mask] = rolling_median[anomaly_mask]
 def mape(actual, pred):
     return np.mean(np.abs((actual - pred) / actual)) * 100
 
-MAX_HORIZON = 13
-HOLDOUT_WEEKS = 6
+FORECAST_HORIZON = 13
 
 # ------------------------------------------------------------------
-# 1. Base feature set (self-features only for now)
+# 1. Base self-features (reset index to simple integer position so
+#    horizon shifting/alignment is unambiguous)
 # ------------------------------------------------------------------
 def build_base_features(ts):
-    df = pd.DataFrame({"y": ts})
+    df = pd.DataFrame({"y": ts.values}, index=range(len(ts)))
     df["lag_1"] = df["y"].shift(1)
     df["lag_2"] = df["y"].shift(2)
     df["lag_3"] = df["y"].shift(3)
@@ -38,21 +37,15 @@ def build_base_features(ts):
     return df
 
 base_df = build_base_features(ts_cleaned)
+dates = ts_cleaned.index  # integer position i <-> dates[i]
 
-# ------------------------------------------------------------------
-# 2. Direct multi-horizon dataset builder
-#    target(h) = value h weeks after the feature row's date
-# ------------------------------------------------------------------
 def build_horizon_dataset(base_df, horizon):
     d = base_df.copy()
     d["target"] = d["y"].shift(-horizon)
     d = d.dropna()
     feature_cols = [c for c in d.columns if c not in ("y", "target")]
-    return d[feature_cols], d["target"], feature_cols
+    return d[feature_cols], d["target"]
 
-# ------------------------------------------------------------------
-# 3. Candidate models
-# ------------------------------------------------------------------
 def get_models():
     return {
         "Ridge": Pipeline([("scaler", StandardScaler()), ("model", Ridge(alpha=1.0))]),
@@ -62,38 +55,48 @@ def get_models():
     }
 
 # ------------------------------------------------------------------
-# 4. Evaluate each model at EACH horizon (1..13), fair holdout
+# 2. Rolling-origin backtest: test at several fixed cutoffs, each time
+#    forecasting all 13 horizons ahead from that origin, using only
+#    data strictly before the origin to train.
 # ------------------------------------------------------------------
-results = []
-predictions = {name: [] for name in get_models()}
-actuals_by_horizon = []
+n = len(base_df)
+# space origins ~4 weeks apart, leaving room for a full 13-week forecast after each
+origins = [o for o in range(n - FORECAST_HORIZON - 1, n - FORECAST_HORIZON - 17, -4) if o > 20]
+origins = sorted(origins)
+print(f"Testing {len(origins)} origins: {[dates[o].date() for o in origins]}")
 
-for h in range(1, MAX_HORIZON + 1):
-    X_h, y_h, feature_cols = build_horizon_dataset(base_df, h)
+all_errors = {name: [] for name in get_models()}
 
-    X_train, y_train = X_h.iloc[:-HOLDOUT_WEEKS], y_h.iloc[:-HOLDOUT_WEEKS]
-    X_test, y_test = X_h.iloc[-HOLDOUT_WEEKS:], y_h.iloc[-HOLDOUT_WEEKS:]
-
-    if len(X_test) == 0:
+for origin in origins:
+    origin_features = base_df.iloc[[origin]]
+    actual_future = ts_cleaned.iloc[origin + 1: origin + 1 + FORECAST_HORIZON]
+    if len(actual_future) < FORECAST_HORIZON:
         continue
 
-    actuals_by_horizon.append(y_test.values[-1])
+    for name in get_models():
+        preds = []
+        for h in range(1, FORECAST_HORIZON + 1):
+            X_h, y_h = build_horizon_dataset(base_df, h)
+            X_train = X_h[X_h.index <= origin]
+            y_train = y_h[y_h.index <= origin]
 
-    for name, model in get_models().items():
-        model.fit(X_train, y_train)
-        pred = model.predict(X_test.iloc[[-1]])[0]
-        predictions[name].append(pred)
+            model = get_models()[name]
+            model.fit(X_train, y_train)
+            pred = model.predict(origin_features[X_train.columns])[0]
+            preds.append(pred)
+
+        mae = mean_absolute_error(actual_future.values, preds)
+        all_errors[name].append(mae)
 
 # ------------------------------------------------------------------
-# 5. Score each model across all horizons against actuals
+# 3. Aggregate across origins
 # ------------------------------------------------------------------
-actuals_arr = np.array(actuals_by_horizon)
-for name, preds in predictions.items():
-    preds_arr = np.array(preds)
-    mae = mean_absolute_error(actuals_arr, preds_arr)
-    mp = mape(actuals_arr, preds_arr)
-    results.append({"model": name, "MAE": round(mae, 1), "MAPE": round(mp, 1)})
+summary = pd.DataFrame({
+    "model": list(all_errors.keys()),
+    "mean_MAE": [np.mean(v) for v in all_errors.values()],
+    "std_MAE": [np.std(v) for v in all_errors.values()],
+    "n_origins": [len(v) for v in all_errors.values()],
+}).sort_values("mean_MAE")
 
-results_df = pd.DataFrame(results).sort_values("MAE")
-print(results_df)
+print(summary)
 print(f"\nHolt's benchmark -> MAE: 10.1  MAPE: 12.1%")
