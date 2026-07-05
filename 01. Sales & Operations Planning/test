@@ -5,42 +5,97 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
-import matplotlib.pyplot as plt
 
 # ------------------------------------------------------------------
 # 0. Rebuild cleaned weekly series
 # ------------------------------------------------------------------
 ts = weekly_total.set_index("week_start")["ticket_count"].asfreq("W-MON")
 anomaly_mask = (ts.index >= "2026-04-20") & (ts.index <= "2026-05-18")
-rolling_median = ts.rolling(8, center=True, min_periods=4).median()
+rolling_median_clean = ts.rolling(8, center=True, min_periods=4).median()
 ts_cleaned = ts.astype(float).copy()
-ts_cleaned[anomaly_mask] = rolling_median[anomaly_mask]
+ts_cleaned[anomaly_mask] = rolling_median_clean[anomaly_mask]
+
+dates = ts_cleaned.index
 
 def mape(actual, pred):
     return np.mean(np.abs((actual - pred) / actual)) * 100
 
+# ------------------------------------------------------------------
+# 1. Base self-features
+# ------------------------------------------------------------------
+base_df = pd.DataFrame({"y": ts_cleaned.values}, index=range(len(ts_cleaned)))
+base_df["lag_1"] = base_df["y"].shift(1)
+base_df["lag_2"] = base_df["y"].shift(2)
+base_df["lag_3"] = base_df["y"].shift(3)
+base_df["lag_4"] = base_df["y"].shift(4)
+base_df["rolling_mean_4"] = base_df["y"].shift(1).rolling(4).mean()
+base_df["rolling_std_4"] = base_df["y"].shift(1).rolling(4).std()
+base_df["trend_idx"] = np.arange(len(base_df))
+
+# ------------------------------------------------------------------
+# 2. Time_card-derived weekly features
+# ------------------------------------------------------------------
+tc = time_card.copy()
+tc["week_start"] = tc["date"] - pd.to_timedelta(tc["date"].dt.weekday, unit="D")
+
+weekly_tc = tc.groupby("week_start").agg(
+    active_headcount=("user_id", "nunique"),
+    total_hours=("time_worked", "sum"),
+).reset_index()
+
+tc["is_leave_row"] = tc["category"] == "Sick/Holiday"
+weekly_leave = tc[tc["is_leave_row"]].groupby("week_start").agg(
+    absence_hours=("time_worked", "sum"),
+    people_on_leave=("user_id", "nunique"),
+).reset_index()
+
+weekly_tc = weekly_tc.merge(weekly_leave, on="week_start", how="left")
+weekly_tc["absence_hours"] = weekly_tc["absence_hours"].fillna(0)
+weekly_tc["people_on_leave"] = weekly_tc["people_on_leave"].fillna(0)
+weekly_tc["absence_rate"] = weekly_tc["absence_hours"] / weekly_tc["total_hours"]
+absence_threshold = weekly_tc["absence_rate"].quantile(0.75)
+weekly_tc["is_sick_holiday"] = (weekly_tc["absence_rate"] > absence_threshold).astype(int)
+
+# ------------------------------------------------------------------
+# 3. is_spike / is_dip — BACKWARD-LOOKING ONLY (no lookahead/leakage)
+#    Uses only the trailing 8 weeks BEFORE the current week to judge
+#    whether the current week is anomalous.
+# ------------------------------------------------------------------
+trailing_median = ts_cleaned.shift(1).rolling(8, min_periods=4).median()
+trailing_mad = (ts_cleaned.shift(1) - trailing_median).abs().rolling(8, min_periods=4).median()
+deviation = (ts_cleaned - trailing_median) / trailing_mad.replace(0, np.nan)
+
+spike_dip_df = pd.DataFrame({
+    "week_start": ts_cleaned.index,
+    "is_spike": (deviation > 2).astype(int).fillna(0),
+    "is_dip": (deviation < -2).astype(int).fillna(0),
+})
+
+# ------------------------------------------------------------------
+# 4. Merge everything onto base_df by week position
+# ------------------------------------------------------------------
+feature_dates = pd.DataFrame({"week_start": dates})
+merged = feature_dates.merge(weekly_tc, on="week_start", how="left") \
+                       .merge(spike_dip_df, on="week_start", how="left")
+
+fill_cols = ["active_headcount", "total_hours", "absence_hours", "people_on_leave",
+             "absence_rate", "is_sick_holiday", "is_spike", "is_dip"]
+merged[fill_cols] = merged[fill_cols].fillna(0)
+
+base_df_extended = pd.concat(
+    [base_df.reset_index(drop=True), merged.drop(columns="week_start").reset_index(drop=True)],
+    axis=1
+)
+
+# ------------------------------------------------------------------
+# 5. Single fixed-origin evaluation, 13-week-ahead, honest cutoff
+# ------------------------------------------------------------------
 FORECAST_HORIZON = 13
+n = len(base_df_extended)
+origin = n - FORECAST_HORIZON - 1
 
-# ------------------------------------------------------------------
-# 1. Base self-features (reset index to simple integer position so
-#    horizon shifting/alignment is unambiguous)
-# ------------------------------------------------------------------
-def build_base_features(ts):
-    df = pd.DataFrame({"y": ts.values}, index=range(len(ts)))
-    df["lag_1"] = df["y"].shift(1)
-    df["lag_2"] = df["y"].shift(2)
-    df["lag_3"] = df["y"].shift(3)
-    df["lag_4"] = df["y"].shift(4)
-    df["rolling_mean_4"] = df["y"].shift(1).rolling(4).mean()
-    df["rolling_std_4"] = df["y"].shift(1).rolling(4).std()
-    df["trend_idx"] = np.arange(len(df))
-    return df
-
-base_df = build_base_features(ts_cleaned)
-dates = ts_cleaned.index  # integer position i <-> dates[i]
-
-def build_horizon_dataset(base_df, horizon):
-    d = base_df.copy()
+def build_horizon_dataset(df, horizon):
+    d = df.copy()
     d["target"] = d["y"].shift(-horizon)
     d = d.dropna()
     feature_cols = [c for c in d.columns if c not in ("y", "target")]
@@ -54,49 +109,34 @@ def get_models():
         "GradientBoosting": GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42),
     }
 
-# ------------------------------------------------------------------
-# 2. Rolling-origin backtest: test at several fixed cutoffs, each time
-#    forecasting all 13 horizons ahead from that origin, using only
-#    data strictly before the origin to train.
-# ------------------------------------------------------------------
-n = len(base_df)
-# space origins ~4 weeks apart, leaving room for a full 13-week forecast after each
-origins = [o for o in range(n - FORECAST_HORIZON - 1, n - FORECAST_HORIZON - 17, -4) if o > 20]
-origins = sorted(origins)
-print(f"Testing {len(origins)} origins: {[dates[o].date() for o in origins]}")
+origin_features = base_df_extended.iloc[[origin]]
+actual_future = ts_cleaned.iloc[origin + 1: origin + 1 + FORECAST_HORIZON]
 
-all_errors = {name: [] for name in get_models()}
+results = []
+predictions = {}
 
-for origin in origins:
-    origin_features = base_df.iloc[[origin]]
-    actual_future = ts_cleaned.iloc[origin + 1: origin + 1 + FORECAST_HORIZON]
-    if len(actual_future) < FORECAST_HORIZON:
-        continue
+for name in get_models():
+    preds = []
+    for h in range(1, FORECAST_HORIZON + 1):
+        X_h, y_h = build_horizon_dataset(base_df_extended, h)
+        # honest cutoff: target index (feature index + h) must be <= origin
+        valid_idx = X_h.index <= (origin - h)
+        X_train, y_train = X_h[valid_idx], y_h[valid_idx]
 
-    for name in get_models():
-        preds = []
-        for h in range(1, FORECAST_HORIZON + 1):
-            X_h, y_h = build_horizon_dataset(base_df, h)
-            X_train = X_h[X_h.index <= origin]
-            y_train = y_h[y_h.index <= origin]
+        model = get_models()[name]
+        model.fit(X_train, y_train)
+        pred = model.predict(origin_features[X_train.columns])[0]
+        preds.append(pred)
 
-            model = get_models()[name]
-            model.fit(X_train, y_train)
-            pred = model.predict(origin_features[X_train.columns])[0]
-            preds.append(pred)
+    predictions[name] = preds
+    mae = mean_absolute_error(actual_future.values, preds)
+    mp = mape(actual_future.values, np.array(preds))
+    results.append({"model": name, "MAE": round(mae, 1), "MAPE": round(mp, 1)})
 
-        mae = mean_absolute_error(actual_future.values, preds)
-        all_errors[name].append(mae)
-
-# ------------------------------------------------------------------
-# 3. Aggregate across origins
-# ------------------------------------------------------------------
-summary = pd.DataFrame({
-    "model": list(all_errors.keys()),
-    "mean_MAE": [np.mean(v) for v in all_errors.values()],
-    "std_MAE": [np.std(v) for v in all_errors.values()],
-    "n_origins": [len(v) for v in all_errors.values()],
-}).sort_values("mean_MAE")
-
-print(summary)
+results_df = pd.DataFrame(results).sort_values("MAE")
+print(results_df)
 print(f"\nHolt's benchmark -> MAE: 10.1  MAPE: 12.1%")
+
+comparison = pd.DataFrame({"actual": actual_future.values, **predictions}, index=actual_future.index)
+print("\nActual vs predicted (13-week horizon):")
+print(comparison)
