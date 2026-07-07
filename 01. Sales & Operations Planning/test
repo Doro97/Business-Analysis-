@@ -1,61 +1,52 @@
-best_model = models['Ridge']
-best_model.fit(X_train, y_train)
+MIN_ROWS = 15
 
-# Get predictions for test set
-test_data = all_segments[all_segments['week_start'] > cutoff].copy()
-test_data['predicted'] = np.maximum(best_model.predict(X_test), 0).round()
+segment_best_models = {}
 
-# ADDED: train data (actuals only, no predictions needed for history)
-train_data = all_segments[all_segments['week_start'] <= cutoff].copy()
+for tech in all_segments['tech_map'].unique():
+    seg = all_segments[all_segments['tech_map'] == tech].sort_values('week_start').reset_index(drop=True)
 
-# Get tech and spec columns
-tech_cols = [c for c in all_segments.columns if c.startswith('tech_map_')]
-spec_cols = [c for c in all_segments.columns if c.startswith('specialisation_')]
+    if len(seg) < MIN_ROWS:
+        print(f"Skipping {tech} — only {len(seg)} rows")
+        continue
 
-# Recover tech_map and specialisation labels for BOTH train and test
-test_data['tech_map'] = test_data[tech_cols].idxmax(axis=1).str.replace('tech_map_', '')
-train_data['tech_map'] = train_data[tech_cols].idxmax(axis=1).str.replace('tech_map_', '')
-# test_data['specialisation'] = test_data[spec_cols].idxmax(axis=1).str.replace('specialisation_', '')
-# train_data['specialisation'] = train_data[spec_cols].idxmax(axis=1).str.replace('specialisation_', '')
+    X_seg = seg[FEATURES]
+    y_seg = seg['ticket_count']
 
-# Plot per segment
-segments = test_data.groupby(['tech_map'])
-n = len(segments)
+    X_train = X_seg[seg['week_start'] <= cutoff]
+    X_test  = X_seg[seg['week_start'] > cutoff]
+    y_train = y_seg[seg['week_start'] <= cutoff]
+    y_test  = y_seg[seg['week_start'] > cutoff]
 
-fig, axes = plt.subplots(n + 1, 1, figsize=(14, 4 * (n + 1)))
+    if len(X_test) < 2 or len(X_train) < 5:
+        print(f"Skipping {tech} — insufficient train/test rows ({len(X_train)}/{len(X_test)})")
+        continue
 
-# Overall actual vs predicted (train + test)
-all_train_total = train_data.groupby('week_start').agg({'ticket_count': 'sum'}).reset_index()
-all_test_total  = test_data.groupby('week_start').agg({'ticket_count': 'sum', 'predicted': 'sum'}).reset_index()
+    best_mae, best_name, best_model_obj, best_preds = np.inf, None, None, None
+    for name, model in models.items():
+        try:
+            model.fit(X_train, y_train)
+            preds = np.maximum(model.predict(X_test), 0).round()
+            mae = mean_absolute_error(y_test, preds)
+            if mae < best_mae:
+                best_mae, best_name, best_model_obj, best_preds = mae, name, model, preds
+        except Exception as e:
+            print(f"{tech} | {name} failed: {e}")
 
-axes[0].plot(all_train_total['week_start'], all_train_total['ticket_count'],
-             color='black', label='Actual (train)')
-axes[0].plot(all_test_total['week_start'], all_test_total['ticket_count'],
-             color='black', linestyle='--', marker='o', label='Actual (test)')
-axes[0].plot(all_test_total['week_start'], all_test_total['predicted'],
-             color='tab:blue', marker='s', label='Predicted')
-axes[0].axvline(pd.to_datetime(cutoff), color='red', linestyle=':', alpha=0.6, label='Train/Test split')
-axes[0].set_title('Ticket volume Actual vs Predicted (Total)')
-axes[0].set_ylabel('Tickets')
-axes[0].legend()
-axes[0].tick_params(axis='x', rotation=45)
+    if best_model_obj:
+        segment_best_models[tech] = {
+            'model': best_model_obj,
+            'model_name': best_name,
+            'X_train': X_train, 'y_train': y_train,
+            'X_test': X_test, 'y_test': y_test,
+            'preds': best_preds,
+            'week_start_test': seg.loc[X_test.index, 'week_start'].values,
+            'MAE': round(best_mae, 2),
+        }
 
-# Per segment — now shows train history leading into the test/predicted window
-for ax, (tech, grp) in zip(axes[1:], segments):
-    grp = grp.sort_values('week_start')
-    train_grp = train_data[train_data['tech_map'] == tech].sort_values('week_start')
+summary = pd.DataFrame([
+    {'technology': tech, 'best_model': v['model_name'], 'MAE': v['MAE'],
+     'avg_actual': round(v['y_test'].mean(), 1)}
+    for tech, v in segment_best_models.items()
+]).sort_values('MAE', ascending=False)
 
-    ax.plot(train_grp['week_start'], train_grp['ticket_count'],
-            color='black', label='Actual (train)')
-    ax.plot(grp['week_start'], grp['ticket_count'],
-            color='black', linestyle='--', marker='o', label='Actual (test)')
-    ax.plot(grp['week_start'], grp['predicted'],
-            color='tab:blue', marker='s', label='Predicted')
-    ax.axvline(pd.to_datetime(cutoff), color='red', linestyle=':', alpha=0.6)
-    ax.set_title(f'Ticket Volume for {tech}')
-    ax.set_ylabel('Tickets')
-    ax.legend()
-    ax.tick_params(axis='x', rotation=45)
-
-plt.tight_layout()
-plt.show()
+print(summary.to_string(index=False))
