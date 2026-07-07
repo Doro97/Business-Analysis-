@@ -1,6 +1,64 @@
-check = feature_df_sr[['sr_count', 'lag_1', 'is_spike']].copy()
-check['raw_shift'] = weekly_sr['sr_count'].shift(1).values[:len(check)]
-check['ref_mean']  = weekly_sr['sr_count'].shift(1).rolling(26, min_periods=1).mean().values[:len(check)]
-check['manual_spike'] = (check['lag_1'] > check['ref_mean'] * 1.4).astype(int)
+from datetime import datetime
 
-print(check.tail(15).to_string(index=False))
+# ============================================================
+# 13-WEEK INCIDENT VOLUME FORECAST BY SEGMENT
+# ============================================================
+today          = pd.Timestamp.today().normalize()
+forecast_dates = pd.date_range(start=today, periods=13, freq='W')
+pxn_date       = datetime.today().strftime('%Y-%m-%d')
+
+FEATURES_SEG_INC = ['lag_1', 'lag_2', 'lag_4', 'roll_4w', 'roll_8w',
+                     'momentum', 'above_avg', 'month', 'trend', 'level_shift']
+
+forecast_rows = []
+
+for (tech, spec), seg_info in segment_best_models_inc.items():
+    model = seg_info['model']
+
+    # Full segment history
+    full_hist = weekly_inc_seg[
+        (weekly_inc_seg['technology'] == tech) &
+        (weekly_inc_seg['specialisation'] == spec)
+    ].sort_values('week_start')['tickets'].values.tolist()
+
+    week_forecasts = []
+
+    for i, date in enumerate(forecast_dates):
+        hist    = pd.Series(full_hist)
+        roll_4  = hist.iloc[-4:].mean() if len(hist) >= 4 else hist.mean()
+        roll_8  = hist.iloc[-8:].mean() if len(hist) >= 8 else hist.mean()
+
+        row = {
+            'lag_1':       hist.iloc[-1],
+            'lag_2':       hist.iloc[-2] if len(hist) >= 2 else hist.iloc[-1],
+            'lag_4':       hist.iloc[-4] if len(hist) >= 4 else hist.iloc[-1],
+            'roll_4w':     roll_4,
+            'roll_8w':     roll_8,
+            'momentum':    roll_4 - roll_8,
+            'above_avg':   int(hist.iloc[-1] > roll_4),
+            'month':       date.month,
+            'trend':       len(full_hist) + i,
+            'level_shift': 1  # all future weeks in new volume regime
+        }
+
+        row_df = pd.DataFrame([row])[FEATURES_SEG_INC].astype(float)
+        pred   = max(0, round(model.predict(row_df)[0]))
+        week_forecasts.append(pred)
+        full_hist.append(pred)
+
+    forecast_rows.append({
+        'technology':     tech,
+        'specialisation': spec,
+        **{f'week_{i+1}': v for i, v in enumerate(week_forecasts)},
+        'pxn_date':       pxn_date
+    })
+
+forecast_inc_df = pd.DataFrame(forecast_rows).sort_values(
+    ['technology', 'specialisation']
+).reset_index(drop=True)
+
+print(forecast_inc_df.to_string(index=False))
+
+# Export
+forecast_inc_df.to_csv('incident_volume_forecast_by_segment.csv', index=False)
+print("Saved: incident_volume_forecast_by_segment.csv")
