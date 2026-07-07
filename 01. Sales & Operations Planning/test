@@ -1,3 +1,25 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error
+
+# ------------------------------------------------------------------
+# 1. Recover plain 'tech_map' string column from the dummy columns
+# ------------------------------------------------------------------
+tech_cols = [c for c in all_segments.columns if c.startswith('tech_map_')]
+all_segments['tech_map'] = all_segments[tech_cols].idxmax(axis=1).str.replace('tech_map_', '')
+
+# ------------------------------------------------------------------
+# 2. Build FEATURES — numeric only, excluding dummy cols AND the
+#    plain label column itself (this was the bug last time)
+# ------------------------------------------------------------------
+non_feature_cols = ['week_start', 'ticket_count', 'tech_map', 'specialisation'] + tech_cols
+FEATURES = [c for c in all_segments.columns if c not in non_feature_cols]
+print("FEATURES:", FEATURES)
+
+# ------------------------------------------------------------------
+# 3. Train one model per technology, pick the best by MAE on holdout
+# ------------------------------------------------------------------
 MIN_ROWS = 15
 
 segment_best_models = {}
@@ -12,10 +34,11 @@ for tech in all_segments['tech_map'].unique():
     X_seg = seg[FEATURES]
     y_seg = seg['ticket_count']
 
-    X_train = X_seg[seg['week_start'] <= cutoff]
-    X_test  = X_seg[seg['week_start'] > cutoff]
-    y_train = y_seg[seg['week_start'] <= cutoff]
-    y_test  = y_seg[seg['week_start'] > cutoff]
+    train_mask = seg['week_start'] <= cutoff
+    test_mask  = seg['week_start'] > cutoff
+
+    X_train, X_test = X_seg[train_mask], X_seg[test_mask]
+    y_train, y_test = y_seg[train_mask], y_seg[test_mask]
 
     if len(X_test) < 2 or len(X_train) < 5:
         print(f"Skipping {tech} — insufficient train/test rows ({len(X_train)}/{len(X_test)})")
@@ -50,3 +73,29 @@ summary = pd.DataFrame([
 ]).sort_values('MAE', ascending=False)
 
 print(summary.to_string(index=False))
+
+# ------------------------------------------------------------------
+# 4. Plot: train history + test actual + predicted, per segment
+# ------------------------------------------------------------------
+n = len(segment_best_models)
+fig, axes = plt.subplots(n, 1, figsize=(14, 4 * n))
+if n == 1:
+    axes = [axes]
+
+for ax, (tech, info) in zip(axes, segment_best_models.items()):
+    train_grp = all_segments[
+        (all_segments['tech_map'] == tech) & (all_segments['week_start'] <= cutoff)
+    ].sort_values('week_start')
+    test_dates = info['week_start_test']
+
+    ax.plot(train_grp['week_start'], train_grp['ticket_count'], color='black', label='Actual (train)')
+    ax.plot(test_dates, info['y_test'].values, color='black', linestyle='--', marker='o', label='Actual (test)')
+    ax.plot(test_dates, info['preds'], color='tab:blue', marker='s', label=f"Predicted ({info['model_name']})")
+    ax.axvline(pd.to_datetime(cutoff), color='red', linestyle=':', alpha=0.6)
+    ax.set_title(f"Ticket Volume for {tech} — MAE {info['MAE']}")
+    ax.set_ylabel('Tickets')
+    ax.legend()
+    ax.tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.show()
