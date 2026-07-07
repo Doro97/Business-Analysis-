@@ -128,6 +128,11 @@ N_WEEKS_AHEAD = 13
 TARGET_COL = 'cr_count'
 today = pd.Timestamp.today().normalize()
 
+# Anchor to the start of NEXT week relative to today (matches week_start convention:
+# pd.to_datetime(...).dt.to_period('W').dt.start_time, which is Monday-based)
+this_week_start = today.to_period('W').start_time
+next_week_start = this_week_start + pd.Timedelta(weeks=1)
+
 forecast_rows = []
 
 for seg_key, grp in cr_seg_encoded.groupby(seg_cols_cr, as_index=False):
@@ -137,19 +142,22 @@ for seg_key, grp in cr_seg_encoded.groupby(seg_cols_cr, as_index=False):
 
     seg_dummy_values = grp.iloc[-1][seg_cols_cr]
     history = grp[['week_start', TARGET_COL]].copy()
-    preds_this_seg = []
+    preds_this_seg = []  # only the weeks we actually want to report
 
-    for step in range(1, N_WEEKS_AHEAD + 1):
+    # Step forward week-by-week from the segment's last known week, until we've
+    # produced N_WEEKS_AHEAD weeks starting at next_week_start. Any weeks between
+    # the segment's last known date and next_week_start are predicted internally
+    # (to keep lag/rolling features continuous) but not included in the output.
+    last_output_date = next_week_start + pd.Timedelta(weeks=N_WEEKS_AHEAD - 1)
+
+    while True:
         last_date = history['week_start'].max()
         next_date = last_date + pd.Timedelta(weeks=1)
+        if next_date > last_output_date:
+            break
 
         lag_1 = history[TARGET_COL].iloc[-1]
         roll_4w = history[TARGET_COL].iloc[-4:].mean()
-        prev_roll_4w = (
-            history[TARGET_COL].iloc[-5:-1].mean()
-            if len(history) >= 5
-            else history[TARGET_COL].iloc[:-1].mean()
-        )
         shift_2 = history[TARGET_COL].iloc[-2] if len(history) >= 2 else lag_1
         momentum = roll_4w - shift_2
         month = next_date.month
@@ -165,11 +173,13 @@ for seg_key, grp in cr_seg_encoded.groupby(seg_cols_cr, as_index=False):
         raw_pred = np.asarray(best_cr_seg.predict(X_next)).ravel()
         pred = float(np.maximum(raw_pred[0], 0).round())
 
-        preds_this_seg.append((next_date, pred))
         history = pd.concat(
             [history, pd.DataFrame({'week_start': [next_date], TARGET_COL: [pred]})],
             ignore_index=True,
         )
+
+        if next_date >= next_week_start:
+            preds_this_seg.append((next_date, pred))
 
     technology = None
     specialisation = None
@@ -193,5 +203,7 @@ week_cols = sorted(
 )
 forecast_df = forecast_df[['technology', 'specialisation'] + week_cols + ['pxn_date']]
 
-forecast_df.to_csv('cr_forecast_13week.csv', index=False)
+output_filename = f"cr_forecast_13week_{today.strftime('%Y-%m-%d')}.csv"
+forecast_df.to_csv(output_filename, index=False)
+print(f"Saved: {output_filename}")
 print(forecast_df)
