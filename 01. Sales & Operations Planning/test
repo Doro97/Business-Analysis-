@@ -1,93 +1,61 @@
+best_model = models['Ridge']
+best_model.fit(X_train, y_train)
 
-N_WEEKS_AHEAD = 13
-TARGET_COL = 'tickets'
-today = pd.Timestamp.today().normalize()
- 
-this_week_start = today.to_period('W').start_time
-next_week_start = this_week_start + pd.Timedelta(weeks=1)
- 
-forecast_rows_inc = []
- 
-for seg_key, grp in weekly_segments.groupby(tech_spec_cols, as_index=False):
-    grp = grp.sort_values('week_start').reset_index(drop=True)
-    # No minimum-history filter: every segment gets a forecast, even brand-new
-    # ones with just 1-2 weeks of data (features fall back to 0 where undefined).
- 
-    seg_dummy_values = grp.iloc[-1][tech_spec_cols]
-    history = grp[['week_start', TARGET_COL]].copy()
-    preds_this_seg = []
- 
-    last_output_date = next_week_start + pd.Timedelta(weeks=N_WEEKS_AHEAD - 1)
- 
-    while True:
-        last_date = history['week_start'].max()
-        next_date = last_date + pd.Timedelta(weeks=1)
-        if next_date > last_output_date:
-            break
- 
-        # Extend history with a placeholder row and recompute features using the
-        # SAME function used at training time -- this guarantees the forecast
-        # features are derived identically to how the model was trained.
-        temp_df = pd.concat(
-            [history, pd.DataFrame({'week_start': [next_date], TARGET_COL: [np.nan]})],
-            ignore_index=True,
-        )
-        featured_temp = build_segment_features(temp_df, target_col=TARGET_COL, dropna=False)
-        last_row = featured_temp.iloc[-1]
- 
-        engineered_cols = [c for c in SEGMENT_FEATURES if c not in tech_spec_cols]
-        bad_mask = last_row[engineered_cols].isna() | np.isinf(
-            last_row[engineered_cols].astype(float)
-        )
-        if bad_mask.any():
-            bad = last_row[engineered_cols][bad_mask].index.tolist()
-            print(
-                f"Warning: segment {dict(seg_dummy_values)} had NaN/inf for "
-                f"{bad} at {next_date.date()} -- filled with 0."
-            )
-            last_row[engineered_cols] = last_row[engineered_cols].where(~bad_mask, 0)
- 
-        feat_row = {c: last_row[c] for c in engineered_cols}
-        for c in tech_spec_cols:
-            feat_row[c] = seg_dummy_values[c]
- 
-        X_next = pd.DataFrame([feat_row])[SEGMENT_FEATURES]
-        if X_next.shape[0] != 1:
-            raise ValueError(f"X_next has {X_next.shape[0]} rows, expected 1")
- 
-        raw_pred = np.asarray(best_model.predict(X_next)).ravel()
-        pred = float(np.maximum(raw_pred[0], 0).round())
- 
-        history = pd.concat(
-            [history, pd.DataFrame({'week_start': [next_date], TARGET_COL: [pred]})],
-            ignore_index=True,
-        )
- 
-        if next_date >= next_week_start:
-            preds_this_seg.append((next_date, pred))
- 
-    technology = None
-    specialisation = None
-    for c in tech_cols:
-        if seg_dummy_values[c] == 1:
-            technology = c.replace('technology_', '')
-    for c in spec_cols:
-        if seg_dummy_values[c] == 1:
-            specialisation = c.replace('specialisation_', '')
- 
-    row = {'technology': technology, 'specialisation': specialisation}
-    for date, pred in preds_this_seg:
-        row[date.strftime('%Y-%m-%d')] = pred
-    row['pxn_date'] = today.date()
-    forecast_rows_inc.append(row)
- 
-forecast_df_inc = pd.DataFrame(forecast_rows_inc)
-week_cols_inc = sorted(
-    [c for c in forecast_df_inc.columns if c not in ('technology', 'specialisation', 'pxn_date')]
-)
-forecast_df_inc = forecast_df_inc[['technology', 'specialisation'] + week_cols_inc + ['pxn_date']]
- 
-output_filename_inc = f"incidents_forecast_13week_{today.strftime('%Y-%m-%d')}.csv"
-forecast_df_inc.to_csv(output_filename_inc, index=False)
-print(f"Saved: {output_filename_inc}")
-print(forecast_df_inc)
+# Get predictions for test set
+test_data = all_segments[all_segments['week_start'] > cutoff].copy()
+test_data['predicted'] = np.maximum(best_model.predict(X_test), 0).round()
+
+# ADDED: train data (actuals only, no predictions needed for history)
+train_data = all_segments[all_segments['week_start'] <= cutoff].copy()
+
+# Get tech and spec columns
+tech_cols = [c for c in all_segments.columns if c.startswith('tech_map_')]
+spec_cols = [c for c in all_segments.columns if c.startswith('specialisation_')]
+
+# Recover tech_map and specialisation labels for BOTH train and test
+test_data['tech_map'] = test_data[tech_cols].idxmax(axis=1).str.replace('tech_map_', '')
+train_data['tech_map'] = train_data[tech_cols].idxmax(axis=1).str.replace('tech_map_', '')
+# test_data['specialisation'] = test_data[spec_cols].idxmax(axis=1).str.replace('specialisation_', '')
+# train_data['specialisation'] = train_data[spec_cols].idxmax(axis=1).str.replace('specialisation_', '')
+
+# Plot per segment
+segments = test_data.groupby(['tech_map'])
+n = len(segments)
+
+fig, axes = plt.subplots(n + 1, 1, figsize=(14, 4 * (n + 1)))
+
+# Overall actual vs predicted (train + test)
+all_train_total = train_data.groupby('week_start').agg({'ticket_count': 'sum'}).reset_index()
+all_test_total  = test_data.groupby('week_start').agg({'ticket_count': 'sum', 'predicted': 'sum'}).reset_index()
+
+axes[0].plot(all_train_total['week_start'], all_train_total['ticket_count'],
+             color='black', label='Actual (train)')
+axes[0].plot(all_test_total['week_start'], all_test_total['ticket_count'],
+             color='black', linestyle='--', marker='o', label='Actual (test)')
+axes[0].plot(all_test_total['week_start'], all_test_total['predicted'],
+             color='tab:blue', marker='s', label='Predicted')
+axes[0].axvline(pd.to_datetime(cutoff), color='red', linestyle=':', alpha=0.6, label='Train/Test split')
+axes[0].set_title('Ticket volume Actual vs Predicted (Total)')
+axes[0].set_ylabel('Tickets')
+axes[0].legend()
+axes[0].tick_params(axis='x', rotation=45)
+
+# Per segment — now shows train history leading into the test/predicted window
+for ax, (tech, grp) in zip(axes[1:], segments):
+    grp = grp.sort_values('week_start')
+    train_grp = train_data[train_data['tech_map'] == tech].sort_values('week_start')
+
+    ax.plot(train_grp['week_start'], train_grp['ticket_count'],
+            color='black', label='Actual (train)')
+    ax.plot(grp['week_start'], grp['ticket_count'],
+            color='black', linestyle='--', marker='o', label='Actual (test)')
+    ax.plot(grp['week_start'], grp['predicted'],
+            color='tab:blue', marker='s', label='Predicted')
+    ax.axvline(pd.to_datetime(cutoff), color='red', linestyle=':', alpha=0.6)
+    ax.set_title(f'Ticket Volume for {tech}')
+    ax.set_ylabel('Tickets')
+    ax.legend()
+    ax.tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.show()
