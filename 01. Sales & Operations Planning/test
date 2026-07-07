@@ -1,1 +1,3 @@
-
+print(all_seg_cr.columns[all_seg_cr.columns.duplicated()])
+print(type(y_seg_cr), getattr(y_seg_cr, "shape", None))
+print(type(y_train_seg_cr), getattr(y_train_seg_cr, "shape", None))
