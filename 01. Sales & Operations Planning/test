@@ -1,1 +1,6 @@
+check = feature_df_sr[['sr_count', 'lag_1', 'is_spike']].copy()
+check['raw_shift'] = weekly_sr['sr_count'].shift(1).values[:len(check)]
+check['ref_mean']  = weekly_sr['sr_count'].shift(1).rolling(26, min_periods=1).mean().values[:len(check)]
+check['manual_spike'] = (check['lag_1'] > check['ref_mean'] * 1.4).astype(int)
 
+print(check.tail(15).to_string(index=False))
