@@ -1,4 +1,3 @@
-
 N_WEEKS_AHEAD = 13
 TARGET_COL = 'sr_count'
 today = pd.Timestamp.today().normalize()
