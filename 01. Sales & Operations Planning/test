@@ -1,44 +1,72 @@
-import re
-from rapidfuzz import fuzz
-from collections import Counter, defaultdict
+def infer_user_id_for_name(name, name_pool, threshold=88):
+    norm_target = normalize_name(name)
+    if not norm_target:
+        return None, 0
+    best_uid, best_score = None, 0
+    for uid, names in name_pool.items():
+        for candidate in names:
+            score = fuzz.token_sort_ratio(norm_target, normalize_name(candidate))
+            if score > best_score:
+                best_score, best_uid = score, uid
+    if best_score >= threshold:
+        return best_uid, best_score
+    return None, best_score
 
-def normalize_name(name):
-    if not isinstance(name, str):
-        return ""
-    cleaned = re.sub(r"[,]", " ", name).strip().lower()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return " ".join(sorted(cleaned.split(" ")))
+# build the name pool: user_id -> list of raw names seen
+name_pool = defaultdict(list)
+for _, row in raw.iterrows():
+    name_pool[row["user_id"]].append(row["name"])
 
-def pick_matched_name(raw_names, threshold=85):
-    raw_names = [n.strip() for n in raw_names if isinstance(n, str) and n.strip()]
-    if not raw_names:
-        return ""
-    normalized_to_raws = defaultdict(list)
-    for raw in raw_names:
-        normalized_to_raws[normalize_name(raw)].append(raw)
+resolved_rows = []
+placeholder_count = 0
 
-    clusters = []
-    for norm in normalized_to_raws:
-        placed = False
-        for cluster in clusters:
-            if fuzz.token_sort_ratio(norm, cluster[0]) >= threshold:
-                cluster.append(norm)
-                placed = True
-                break
-        if not placed:
-            clusters.append([norm])
+for _, row in resources.iterrows():
+    name = row["name"]
+    if not isinstance(name, str) or not name.strip():
+        continue
+    uid, score = infer_user_id_for_name(name, name_pool)
+    if uid is None:
+        placeholder_count += 1
+        uid = f"RESOURCE_ONLY_{placeholder_count}"
+        print(f"No confident match for '{name}' (best score {score:.0f}) -> {uid}")
+    resolved_rows.append({
+        "name": name,
+        "user_id": uid,
+        "source": "resources",
+        "technology": row.get("technology"),
+        "specialisation": row.get("specialisation"),
+    })
 
-    best_cluster = max(clusters, key=lambda c: sum(len(normalized_to_raws[n]) for n in c))
-    candidates = [r for n in best_cluster for r in normalized_to_raws[n]]
-    counts = Counter(candidates)
-    top = max(counts.values())
-    return max([n for n, c in counts.items() if c == top], key=len)
+resources_resolved = pd.DataFrame(resolved_rows)
+resources_resolved.head()
 
+
+# Add resources into the full raw table, and recompute matched names to include it
+full = pd.concat([raw, resources_resolved], ignore_index=True)
 
 matched_name_by_uid = {}
-
-for uid, group in raw.groupby("user_id"):
+for uid, group in full.groupby("user_id"):
     matched_name_by_uid[uid] = pick_matched_name(group["name"].tolist())
 
-# quick check
-list(matched_name_by_uid.items())[:5]
+# tech/specialisation per user_id: timecard first, then resources
+tech_by_uid, spec_by_uid = {}, {}
+for source in ["timecard", "resources"]:
+    subset = full[full["source"] == source]
+    for _, row in subset.iterrows():
+        uid = row["user_id"]
+        if uid not in tech_by_uid and pd.notna(row.get("technology")):
+            tech_by_uid[uid] = row["technology"]
+        if uid not in spec_by_uid and pd.notna(row.get("specialisation")):
+            spec_by_uid[uid] = row["specialisation"]
+
+# build final rows
+final = full.drop_duplicates(subset=["source", "name", "user_id"]).copy()
+final["technology"] = final["user_id"].map(tech_by_uid)
+final["specialisation"] = final["user_id"].map(spec_by_uid)
+final["matched_name"] = final["user_id"].map(matched_name_by_uid)
+
+final = final.rename(columns={"name": "original name", "user_id": "user id", "matched_name": "matched name"})
+final = final[["original name", "user id", "technology", "specialisation", "source", "matched name"]]
+final = final.sort_values(["matched name", "source"])
+
+final.head(20)
