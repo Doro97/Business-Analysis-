@@ -1,26 +1,23 @@
 
 N_WEEKS_AHEAD = 13
-TARGET_COL = 'ticket_count'
+TARGET_COL = 'tickets'
 today = pd.Timestamp.today().normalize()
  
 this_week_start = today.to_period('W').start_time
 next_week_start = this_week_start + pd.Timedelta(weeks=1)
-last_output_date = next_week_start + pd.Timedelta(weeks=N_WEEKS_AHEAD - 1)
  
-forecast_rows_ticket = []
+forecast_rows_inc = []
  
-for tech, info in segment_best_models.items():
-    model = info['model']
-    grp = weekly_segments[
-        weekly_segments[[c for c in tech_map_cols if c == f'tech_map_{tech}']].iloc[:, 0] == 1
-    ][['week_start', TARGET_COL]].sort_values('week_start').reset_index(drop=True)
+for seg_key, grp in weekly_segments.groupby(tech_spec_cols, as_index=False):
+    grp = grp.sort_values('week_start').reset_index(drop=True)
+    # No minimum-history filter: every segment gets a forecast, even brand-new
+    # ones with just 1-2 weeks of data (features fall back to 0 where undefined).
  
-    if grp.empty:
-        print(f"Skipping forecast for {tech}: no rows found in weekly_segments.")
-        continue
- 
-    history = grp.copy()
+    seg_dummy_values = grp.iloc[-1][tech_spec_cols]
+    history = grp[['week_start', TARGET_COL]].copy()
     preds_this_seg = []
+ 
+    last_output_date = next_week_start + pd.Timedelta(weeks=N_WEEKS_AHEAD - 1)
  
     while True:
         last_date = history['week_start'].max()
@@ -28,24 +25,37 @@ for tech, info in segment_best_models.items():
         if next_date > last_output_date:
             break
  
+        # Extend history with a placeholder row and recompute features using the
+        # SAME function used at training time -- this guarantees the forecast
+        # features are derived identically to how the model was trained.
         temp_df = pd.concat(
             [history, pd.DataFrame({'week_start': [next_date], TARGET_COL: [np.nan]})],
             ignore_index=True,
         )
-        featured_temp = build_features(temp_df, target_col=TARGET_COL, dropna=False)
+        featured_temp = build_segment_features(temp_df, target_col=TARGET_COL, dropna=False)
         last_row = featured_temp.iloc[-1]
  
-        bad_mask = last_row[FEATURES].isna() | np.isinf(last_row[FEATURES].astype(float))
+        engineered_cols = [c for c in SEGMENT_FEATURES if c not in tech_spec_cols]
+        bad_mask = last_row[engineered_cols].isna() | np.isinf(
+            last_row[engineered_cols].astype(float)
+        )
         if bad_mask.any():
-            bad = last_row[FEATURES][bad_mask].index.tolist()
-            print(f"Warning: {tech} had NaN/inf for {bad} at {next_date.date()} -- filled with 0.")
-            last_row[FEATURES] = last_row[FEATURES].where(~bad_mask, 0)
+            bad = last_row[engineered_cols][bad_mask].index.tolist()
+            print(
+                f"Warning: segment {dict(seg_dummy_values)} had NaN/inf for "
+                f"{bad} at {next_date.date()} -- filled with 0."
+            )
+            last_row[engineered_cols] = last_row[engineered_cols].where(~bad_mask, 0)
  
-        X_next = pd.DataFrame([last_row[FEATURES].to_dict()])[FEATURES]
+        feat_row = {c: last_row[c] for c in engineered_cols}
+        for c in tech_spec_cols:
+            feat_row[c] = seg_dummy_values[c]
+ 
+        X_next = pd.DataFrame([feat_row])[SEGMENT_FEATURES]
         if X_next.shape[0] != 1:
             raise ValueError(f"X_next has {X_next.shape[0]} rows, expected 1")
  
-        raw_pred = np.asarray(model.predict(X_next)).ravel()
+        raw_pred = np.asarray(best_model.predict(X_next)).ravel()
         pred = float(np.maximum(raw_pred[0], 0).round())
  
         history = pd.concat(
@@ -56,21 +66,28 @@ for tech, info in segment_best_models.items():
         if next_date >= next_week_start:
             preds_this_seg.append((next_date, pred))
  
-    row = {'technology': tech, 'specialisation': None}
+    technology = None
+    specialisation = None
+    for c in tech_cols:
+        if seg_dummy_values[c] == 1:
+            technology = c.replace('technology_', '')
+    for c in spec_cols:
+        if seg_dummy_values[c] == 1:
+            specialisation = c.replace('specialisation_', '')
+ 
+    row = {'technology': technology, 'specialisation': specialisation}
     for date, pred in preds_this_seg:
         row[date.strftime('%Y-%m-%d')] = pred
     row['pxn_date'] = today.date()
-    forecast_rows_ticket.append(row)
+    forecast_rows_inc.append(row)
  
-forecast_df_ticket = pd.DataFrame(forecast_rows_ticket)
-week_cols_ticket = sorted(
-    [c for c in forecast_df_ticket.columns if c not in ('technology', 'specialisation', 'pxn_date')]
+forecast_df_inc = pd.DataFrame(forecast_rows_inc)
+week_cols_inc = sorted(
+    [c for c in forecast_df_inc.columns if c not in ('technology', 'specialisation', 'pxn_date')]
 )
-forecast_df_ticket = forecast_df_ticket[
-    ['technology', 'specialisation'] + week_cols_ticket + ['pxn_date']
-]
+forecast_df_inc = forecast_df_inc[['technology', 'specialisation'] + week_cols_inc + ['pxn_date']]
  
-output_filename_ticket = f"ticket_volume_forecast_13week_{today.strftime('%Y-%m-%d')}.csv"
-forecast_df_ticket.to_csv(output_filename_ticket, index=False)
-print(f"Saved: {output_filename_ticket}")
-print(forecast_df_ticket)
+output_filename_inc = f"incidents_forecast_13week_{today.strftime('%Y-%m-%d')}.csv"
+forecast_df_inc.to_csv(output_filename_inc, index=False)
+print(f"Saved: {output_filename_inc}")
+print(forecast_df_inc)
