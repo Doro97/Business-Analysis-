@@ -1,55 +1,42 @@
-best_model = models['Ridge']
-best_model.fit(X_train, y_train)
 
-# Get predictions for test set
-test_data = all_segments[all_segments['week_start'] > cutoff].copy()
-test_data['predicted'] = np.maximum(best_model.predict(X_test), 0).round()
-
-# Get tech column
-tech_cols = [c for c in all_segments.columns if c.startswith('technology_')]
-# spec_cols = [c for c in all_segments.columns if c.startswith('specialisation_')]
-
-# Recover technology label (on the FULL dataset, not just test, so train rows are labeled too)
-all_segments['technology'] = all_segments[tech_cols].idxmax(axis=1).str.replace('technology_', '')
-test_data['technology'] = test_data[tech_cols].idxmax(axis=1).str.replace('technology_', '')
-# test_data['specialisation'] = test_data[spec_cols].idxmax(axis=1).str.replace('specialisation_', '')
-
-# Plot per segment
-segments = test_data.groupby('technology')
-n = len(segments)
-
-fig, axes = plt.subplots(n + 1, 1, figsize=(14, 4 * (n + 1)))
-
-# Overall actual (train+test) vs predicted (test only)
-all_actual = all_segments.groupby('week_start')['tickets'].sum().reset_index()
-all_pred = test_data.groupby('week_start')['predicted'].sum().reset_index()
-
-axes[0].plot(all_actual['week_start'], all_actual['tickets'], label='Actual', marker='o', markersize=3)
-axes[0].plot(all_pred['week_start'], all_pred['predicted'], label='Predicted', marker='x', markersize=4, color='orange')
-axes[0].axvline(x=cutoff, color='gray', linestyle='--', label='Train/Test split')
-axes[0].set_title('Ticket Volume Actual vs Predicted (Total)')
-axes[0].set_ylabel('Tickets')
-axes[0].legend()
-axes[0].tick_params(axis='x', rotation=45)
-
-# Per segment
-for ax, (tech, pred_grp) in zip(axes[1:], segments):
-    # full actual history for this tech (train + test), not just test_data
-    full_hist = (
-        all_segments[all_segments['technology'] == tech]
-        .sort_values('week_start')
-    )
-    pred_grp = pred_grp.sort_values('week_start')
-
-    ax.plot(full_hist['week_start'], full_hist['tickets'],
-            label='Actual', marker='o', markersize=3)
-    ax.plot(pred_grp['week_start'], pred_grp['predicted'],
-            label='Predicted', marker='x', markersize=4, color='orange')
-    ax.axvline(x=cutoff, color='gray', linestyle='--')
-    ax.set_title(f'Ticket Volume for {tech}')
-    ax.set_ylabel('Tickets')
-    ax.legend()
-    ax.tick_params(axis='x', rotation=45)
-
-plt.tight_layout()
-plt.show()
+def get_next_monday(today=None):
+    today = pd.Timestamp(today or datetime.today().date())
+    days_ahead = (0 - today.weekday()) % 7   # Monday = 0
+    if days_ahead == 0:
+        days_ahead = 7                        # if today IS Monday, jump to next week's
+    return today + pd.Timedelta(days=days_ahead)
+ 
+forecast_start = get_next_monday()   # uses actual system date; pass a date to override for testing
+print(f"Today: {pd.Timestamp(datetime.today().date()).date()}")
+print(f"Forecast starts: {forecast_start.date()}")
+ 
+# ---------------------------------------------------------------
+# 5. Recursive forecast: bridge any gap between last known week and
+#    forecast_start, then continue HORIZON weeks past forecast_start
+# ---------------------------------------------------------------
+last_known_date = df["week_start"].max()
+work = df[["week_start", "ticket_count"]].copy()
+ 
+# all weeks needed: from (last_known_date + 1wk) through (forecast_start + HORIZON - 1 wk)
+final_target_date = forecast_start + pd.Timedelta(weeks=HORIZON - 1)
+all_future_weeks = pd.date_range(last_known_date + pd.Timedelta(weeks=1), final_target_date, freq="7D")
+ 
+forecast_rows = []
+for fdate in all_future_weeks:
+    tmp = pd.concat([work, pd.DataFrame({"week_start": [fdate], "ticket_count": [np.nan]})],
+                     ignore_index=True)
+    feats_tmp = build_features(tmp, drop_na=False)
+    x_row = feats_tmp.loc[[fdate], FEATURES]
+    pred = max(model.predict(x_row)[0], 0)
+ 
+    work = pd.concat([work, pd.DataFrame({"week_start": [fdate], "ticket_count": [pred]})],
+                      ignore_index=True)
+ 
+    if fdate >= forecast_start:
+        forecast_rows.append({"week_start": fdate, "forecast": round(pred)})
+ 
+forecast_df = pd.DataFrame(forecast_rows)
+print(f"\n13-week forecast ({forecast_df['week_start'].min().date()} -> {forecast_df['week_start'].max().date()}):")
+print(forecast_df.to_string(index=False))
+ 
+forecast_df.to_csv("forecast_13w_from_next_monday.csv", index=False)
