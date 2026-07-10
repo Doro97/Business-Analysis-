@@ -1,42 +1,98 @@
+def build_chg_features(df, target_col='ticket_count', drop_na=True):
+    df = df.copy().set_index('week_start')
+    df.index = pd.to_datetime(df.index)
 
-def get_next_monday(today=None):
-    today = pd.Timestamp(today or datetime.today().date())
-    days_ahead = (0 - today.weekday()) % 7   # Monday = 0
-    if days_ahead == 0:
-        days_ahead = 7                        # if today IS Monday, jump to next week's
-    return today + pd.Timedelta(days=days_ahead)
- 
-forecast_start = get_next_monday()   # uses actual system date; pass a date to override for testing
-print(f"Today: {pd.Timestamp(datetime.today().date()).date()}")
-print(f"Forecast starts: {forecast_start.date()}")
- 
-# ---------------------------------------------------------------
-# 5. Recursive forecast: bridge any gap between last known week and
-#    forecast_start, then continue HORIZON weeks past forecast_start
-# ---------------------------------------------------------------
-last_known_date = df["week_start"].max()
-work = df[["week_start", "ticket_count"]].copy()
- 
-# all weeks needed: from (last_known_date + 1wk) through (forecast_start + HORIZON - 1 wk)
-final_target_date = forecast_start + pd.Timedelta(weeks=HORIZON - 1)
-all_future_weeks = pd.date_range(last_known_date + pd.Timedelta(weeks=1), final_target_date, freq="7D")
- 
-forecast_rows = []
-for fdate in all_future_weeks:
-    tmp = pd.concat([work, pd.DataFrame({"week_start": [fdate], "ticket_count": [np.nan]})],
-                     ignore_index=True)
-    feats_tmp = build_features(tmp, drop_na=False)
-    x_row = feats_tmp.loc[[fdate], FEATURES]
-    pred = max(model.predict(x_row)[0], 0)
- 
-    work = pd.concat([work, pd.DataFrame({"week_start": [fdate], "ticket_count": [pred]})],
-                      ignore_index=True)
- 
-    if fdate >= forecast_start:
-        forecast_rows.append({"week_start": fdate, "forecast": round(pred)})
- 
-forecast_df = pd.DataFrame(forecast_rows)
-print(f"\n13-week forecast ({forecast_df['week_start'].min().date()} -> {forecast_df['week_start'].max().date()}):")
-print(forecast_df.to_string(index=False))
- 
-forecast_df.to_csv("forecast_13w_from_next_monday.csv", index=False)
+    # --- existing lag/rolling/seasonal features ---
+    df['lag_1'] = df[target_col].shift(1)
+    df['lag_2'] = df[target_col].shift(2)
+    df['lag_4'] = df[target_col].shift(4)
+    df['roll_2w'] = df[target_col].shift(1).rolling(2).mean()
+    df['roll_4w'] = df[target_col].shift(1).rolling(4).mean()
+
+    df['week_of_year'] = df.index.strftime('%W').astype(int)
+    df['month'] = df.index.month
+    df['sin_52'] = np.sin(2*np.pi*df['week_of_year']/52)
+    df['cos_52'] = np.cos(2*np.pi*df['week_of_year']/52)
+
+    df['pct_change_1w'] = df[target_col].pct_change(1).shift(1)
+    df['pct_change_4w'] = df[target_col].pct_change(4).shift(1)
+    df['acceleration'] = df['pct_change_1w'] - df['pct_change_4w'].shift(1)
+    df['above_avg'] = (df[target_col].shift(1) > df['roll_2w'].shift(1)).astype(int)
+
+    # holiday flags (existing)
+    years = df.index.year.unique()
+    xmas_weeks, easter_weeks = set(), set()
+    for y in years:
+        xmas = pd.Timestamp(year=y, month=12, day=25)
+        xmas_weeks.update(pd.date_range(xmas - pd.Timedelta(days=xmas.weekday()), periods=1))
+        e = pd.Timestamp(easter(y))
+        easter_weeks.add(e - pd.Timedelta(days=e.weekday()))
+
+    df['is_christmas_week'] = df.index.isin(xmas_weeks).astype(int)
+    df['is_easter_week'] = df.index.isin(easter_weeks).astype(int)
+
+    cumulative_mean = (df[target_col].shift(1).expanding().mean())
+    df['is_spike'] = (df[target_col].shift(1) > cumulative_mean * 1.4).astype(int)
+    df['is_dip'] = (df[target_col].shift(1) > cumulative_mean * 0.6).astype(int)
+
+    # ============================================================
+    # NEW: exogenous calendar / event features
+    # ============================================================
+
+    week_end = df.index + pd.Timedelta(days=6)
+
+    # --- Month-end / quarter-end proximity ---
+    # Many orgs see CR spikes right before month/quarter close (freeze windows, batch changes)
+    month_end = df.index.to_period('M').to_timestamp('M')
+    df['days_to_month_end'] = (month_end - week_end).dt.days.clip(lower=0)
+    df['is_month_end_week'] = (df['days_to_month_end'] <= 7).astype(int)
+
+    quarter_end = df.index.to_period('Q').to_timestamp('Q')
+    df['days_to_quarter_end'] = (quarter_end - week_end).dt.days.clip(lower=0)
+    df['is_quarter_end_week'] = (df['days_to_quarter_end'] <= 7).astype(int)
+
+    # --- Fiscal quarter (adjust start month if your org's FY doesn't start Jan) ---
+    df['fiscal_quarter'] = df.index.quarter
+
+    # --- Sprint-end proxy (assumes 2-week sprints; adjust anchor date as needed) ---
+    sprint_anchor = pd.Timestamp('2024-01-01')  # set to a known sprint start date
+    df['sprint_week_num'] = ((df.index - sprint_anchor).days // 7) % 2
+    df['is_sprint_end_week'] = (df['sprint_week_num'] == 1).astype(int)
+
+    # --- Change freeze windows (common: year-end, major holidays) ---
+    # Customize these ranges to your org's actual freeze calendar
+    freeze_ranges = []
+    for y in years:
+        freeze_ranges.append((pd.Timestamp(y, 12, 15), pd.Timestamp(y+1, 1, 5)))  # year-end freeze
+    df['is_freeze_window'] = 0
+    for start, end in freeze_ranges:
+        mask = (df.index >= start) & (df.index <= end)
+        df.loc[mask, 'is_freeze_window'] = 1
+
+    # Post-freeze rebound: first 2 weeks after a freeze often see a CR backlog spike
+    df['is_post_freeze'] = 0
+    for start, end in freeze_ranges:
+        rebound_end = end + pd.Timedelta(weeks=2)
+        mask = (df.index > end) & (df.index <= rebound_end)
+        df.loc[mask, 'is_post_freeze'] = 1
+
+    # --- Release calendar (plug in known release dates if you have them) ---
+    # If you have a release schedule table, merge it in instead of this placeholder
+    known_release_dates = pd.to_datetime([
+        # '2024-03-15', '2024-06-15', ... add real release dates here
+    ])
+    df['days_to_release'] = df.index.map(
+        lambda d: min([abs((r - d).days) for r in known_release_dates], default=999)
+    )
+    df['is_release_week'] = (df['days_to_release'] <= 7).astype(int)
+
+    # --- Volatility context (helps classifier distinguish "calm" vs "turbulent" periods) ---
+    df['rolling_std_4w'] = df[target_col].shift(1).rolling(4).std()
+    df['rolling_std_8w'] = df[target_col].shift(1).rolling(8).std()
+    df['weeks_since_last_spike'] = (
+        df['is_spike'].iloc[::-1].groupby((df['is_spike'].iloc[::-1] == 1).cumsum()).cumcount().iloc[::-1]
+    )
+
+    if drop_na:
+        return df.dropna()
+    return df
