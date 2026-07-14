@@ -1,34 +1,33 @@
 # ------------------------------------------------------------------
-# 1. Actual totals (up to last actual week, July 6)
+# 1. Actual, per technology — up to July 6
 # ------------------------------------------------------------------
-actual_totals = (
-    weekly_total[weekly_total['week_start'] <= '2026-07-06']
-    [['week_start', 'ticket_count']]
+actual_by_tech = (
+    inc_by_tech[inc_by_tech['week_start'] <= '2026-07-06']
+    [['week_start', 'technology', 'ticket_count']]
     .rename(columns={'ticket_count': 'actual'})
     .copy()
 )
-actual_totals['week_start'] = pd.to_datetime(actual_totals['week_start'])
+actual_by_tech['week_start'] = pd.to_datetime(actual_by_tech['week_start'])
 
 # ------------------------------------------------------------------
-# 2. Predicted totals — sum forecast_df_inc across all technologies,
-#    per week column
+# 2. Predicted, per technology — melt forecast_df_inc from wide to long
 # ------------------------------------------------------------------
 week_cols = [c for c in forecast_df_inc.columns if c not in ('technology', 'pxn_date')]
 
-predicted_totals = (
-    forecast_df_inc[week_cols]
-    .sum(axis=0)
-    .reset_index()
+predicted_by_tech = forecast_df_inc.melt(
+    id_vars='technology',
+    value_vars=week_cols,
+    var_name='week_start',
+    value_name='predicted'
 )
-predicted_totals.columns = ['week_start', 'predicted']
-predicted_totals['week_start'] = pd.to_datetime(predicted_totals['week_start'])
+predicted_by_tech['week_start'] = pd.to_datetime(predicted_by_tech['week_start'])
 
 # ------------------------------------------------------------------
-# 3. Combine into one dataframe: week_start, actual, predicted
+# 3. Combine: one row per (week_start, technology), actual + predicted
 # ------------------------------------------------------------------
-total_actual_vs_predicted = pd.merge(
-    actual_totals, predicted_totals,
-    on='week_start', how='outer'
-).sort_values('week_start').reset_index(drop=True)
+by_tech_actual_vs_predicted = pd.merge(
+    actual_by_tech, predicted_by_tech,
+    on=['week_start', 'technology'], how='outer'
+).sort_values(['technology', 'week_start']).reset_index(drop=True)
 
-print(total_actual_vs_predicted.to_string(index=False))
+print(by_tech_actual_vs_predicted.to_string(index=False))
