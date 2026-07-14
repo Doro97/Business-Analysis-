@@ -1,33 +1,29 @@
 # ------------------------------------------------------------------
-# 1. Actual, per technology — up to July 6
+# 1. Last 13 actual weeks, per technology
 # ------------------------------------------------------------------
-actual_by_tech = (
-    inc_by_tech[inc_by_tech['week_start'] <= '2026-07-06']
-    [['week_start', 'technology', 'ticket_count']]
-    .rename(columns={'ticket_count': 'actual'})
-    .copy()
-)
-actual_by_tech['week_start'] = pd.to_datetime(actual_by_tech['week_start'])
+last_actual_date = pd.to_datetime(inc_by_tech['week_start'].max())
+first_actual_date = last_actual_date - pd.Timedelta(weeks=12)  # 13 weeks inclusive
+
+actual_recent = inc_by_tech[
+    (pd.to_datetime(inc_by_tech['week_start']) >= first_actual_date) &
+    (pd.to_datetime(inc_by_tech['week_start']) <= last_actual_date)
+].copy()
+actual_recent['week_start'] = pd.to_datetime(actual_recent['week_start'])
+
+actual_pivot = actual_recent.pivot(index='technology', columns='week_start', values='ticket_count')
+actual_pivot.columns = [c.strftime('%Y-%m-%d') for c in actual_pivot.columns]
 
 # ------------------------------------------------------------------
-# 2. Predicted, per technology — melt forecast_df_inc from wide to long
+# 2. Next 4 predicted weeks, per technology
 # ------------------------------------------------------------------
 week_cols = [c for c in forecast_df_inc.columns if c not in ('technology', 'pxn_date')]
+next_4_cols = sorted(week_cols, key=lambda c: pd.to_datetime(c))[:4]
 
-predicted_by_tech = forecast_df_inc.melt(
-    id_vars='technology',
-    value_vars=week_cols,
-    var_name='week_start',
-    value_name='predicted'
-)
-predicted_by_tech['week_start'] = pd.to_datetime(predicted_by_tech['week_start'])
+predicted_pivot = forecast_df_inc.set_index('technology')[next_4_cols]
 
 # ------------------------------------------------------------------
-# 3. Combine: one row per (week_start, technology), actual + predicted
+# 3. Combine side by side: actuals | predicted
 # ------------------------------------------------------------------
-by_tech_actual_vs_predicted = pd.merge(
-    actual_by_tech, predicted_by_tech,
-    on=['week_start', 'technology'], how='outer'
-).sort_values(['technology', 'week_start']).reset_index(drop=True)
+combined_pivot = actual_pivot.join(predicted_pivot, how='outer')
 
-print(by_tech_actual_vs_predicted.to_string(index=False))
+print(combined_pivot)
