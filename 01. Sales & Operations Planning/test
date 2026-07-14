@@ -1,29 +1,36 @@
 # ------------------------------------------------------------------
-# 1. Last 13 actual weeks, per technology
+# 1. Actual for last actual week, per technology
 # ------------------------------------------------------------------
 last_actual_date = pd.to_datetime(inc_by_tech['week_start'].max())
-first_actual_date = last_actual_date - pd.Timedelta(weeks=12)  # 13 weeks inclusive
 
-actual_recent = inc_by_tech[
-    (pd.to_datetime(inc_by_tech['week_start']) >= first_actual_date) &
-    (pd.to_datetime(inc_by_tech['week_start']) <= last_actual_date)
-].copy()
-actual_recent['week_start'] = pd.to_datetime(actual_recent['week_start'])
-
-actual_pivot = actual_recent.pivot(index='technology', columns='week_start', values='ticket_count')
-actual_pivot.columns = [c.strftime('%Y-%m-%d') for c in actual_pivot.columns]
+actual_last_week = (
+    inc_by_tech[pd.to_datetime(inc_by_tech['week_start']) == last_actual_date]
+    [['technology', 'ticket_count']]
+    .rename(columns={'ticket_count': 'actual'})
+)
 
 # ------------------------------------------------------------------
-# 2. Next 4 predicted weeks, per technology
+# 2. Predicted for this week (first forecast column), per technology
 # ------------------------------------------------------------------
 week_cols = [c for c in forecast_df_inc.columns if c not in ('technology', 'pxn_date')]
-next_4_cols = sorted(week_cols, key=lambda c: pd.to_datetime(c))[:4]
+this_week_col = sorted(week_cols, key=lambda c: pd.to_datetime(c))[0]
 
-predicted_pivot = forecast_df_inc.set_index('technology')[next_4_cols]
+predicted_this_week = forecast_df_inc[['technology', this_week_col]].rename(
+    columns={this_week_col: 'predicted'}
+)
 
 # ------------------------------------------------------------------
-# 3. Combine side by side: actuals | predicted
+# 3. Combine, add Total row
 # ------------------------------------------------------------------
-combined_pivot = actual_pivot.join(predicted_pivot, how='outer')
+summary = pd.merge(actual_last_week, predicted_this_week, on='technology', how='outer').fillna(0)
 
-print(combined_pivot)
+total_row = pd.DataFrame([{
+    'technology': 'Total',
+    'actual': summary['actual'].sum(),
+    'predicted': summary['predicted'].sum()
+}])
+
+summary = pd.concat([summary, total_row], ignore_index=True)
+
+print(f"Actual week: {last_actual_date.date()}   |   Predicted week: {this_week_col}")
+print(summary.to_string(index=False))
