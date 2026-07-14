@@ -1,36 +1,16 @@
-# ------------------------------------------------------------------
-# 1. Actual for last actual week, per technology
-# ------------------------------------------------------------------
-last_actual_date = pd.to_datetime(inc_by_tech['week_start'].max())
-
-actual_last_week = (
-    inc_by_tech[pd.to_datetime(inc_by_tech['week_start']) == last_actual_date]
-    [['technology', 'ticket_count']]
-    .rename(columns={'ticket_count': 'actual'})
+summary = (
+    test_data.groupby('technology')
+    .agg(actual=('ticket_count', 'sum'), predicted=('predicted', 'sum'))
+    .reset_index()
 )
-
-# ------------------------------------------------------------------
-# 2. Predicted for this week (first forecast column), per technology
-# ------------------------------------------------------------------
-week_cols = [c for c in forecast_df_inc.columns if c not in ('technology', 'pxn_date')]
-this_week_col = sorted(week_cols, key=lambda c: pd.to_datetime(c))[0]
-
-predicted_this_week = forecast_df_inc[['technology', this_week_col]].rename(
-    columns={this_week_col: 'predicted'}
-)
-
-# ------------------------------------------------------------------
-# 3. Combine, add Total row
-# ------------------------------------------------------------------
-summary = pd.merge(actual_last_week, predicted_this_week, on='technology', how='outer').fillna(0)
 
 total_row = pd.DataFrame([{
     'technology': 'Total',
     'actual': summary['actual'].sum(),
     'predicted': summary['predicted'].sum()
 }])
-
 summary = pd.concat([summary, total_row], ignore_index=True)
+summary['error'] = summary['actual'] - summary['predicted']
 
-print(f"Actual week: {last_actual_date.date()}   |   Predicted week: {this_week_col}")
+print(f"Actual vs Predicted for week: {cutoff.date()}")
 print(summary.to_string(index=False))
