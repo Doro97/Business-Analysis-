@@ -1,16 +1,1 @@
-summary = (
-    test_data.groupby('technology')
-    .agg(actual=('ticket_count', 'sum'), predicted=('predicted', 'sum'))
-    .reset_index()
-)
 
-total_row = pd.DataFrame([{
-    'technology': 'Total',
-    'actual': summary['actual'].sum(),
-    'predicted': summary['predicted'].sum()
-}])
-summary = pd.concat([summary, total_row], ignore_index=True)
-summary['error'] = summary['actual'] - summary['predicted']
-
-print(f"Actual vs Predicted for week: {cutoff.date()}")
-print(summary.to_string(index=False))
