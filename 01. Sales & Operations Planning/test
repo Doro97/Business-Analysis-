@@ -1,16 +1,1 @@
-import json as _json
 
-def _cypher_map(d: dict) -> str:
-    """Convert a Python dict into a Cypher map literal with bare keys
-    and safely-escaped values."""
-    parts = []
-    for k, v in d.items():
-        if v is None:
-            parts.append(f"{k}: null")
-        elif isinstance(v, bool):
-            parts.append(f"{k}: {'true' if v else 'false'}")
-        elif isinstance(v, (int, float)):
-            parts.append(f"{k}: {v}")
-        else:
-            parts.append(f"{k}: {_json.dumps(str(v))}")  # safely quoted string value
-    return "{" + ", ".join(parts) + "}"
