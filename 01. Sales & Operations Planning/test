@@ -1,1 +1,8 @@
 
+PYTHONPATH=src python3 -c "
+from policy_twin.settings import settings
+from policy_twin.pipeline.run_all import do_geometry
+
+dsn = settings.database_url
+do_geometry(dsn)
+"
