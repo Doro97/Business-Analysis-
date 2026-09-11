@@ -1,18 +1,28 @@
 python3 -c "
 from policy_twin.adapters.db import sync_conn
+from policy_twin.adapters.graph import age_setup_sync, parse_agtype
 
-doc_id = 'd_sc_xxxxx'  # replace with your actual doc_id from step 2
+graph_name = 'scenario_sc_941240753a'  # from your printed graph_name
 
 with sync_conn() as conn:
-    n = conn.execute(
-        'SELECT count(*) FROM text_chunk WHERE doc_id = %s', (doc_id,)
-    ).fetchone()
-    print('total chunks:', n)
+    age_setup_sync(conn)
 
-    rows = conn.execute(
-        'SELECT chunk_id, page, text FROM text_chunk WHERE doc_id = %s ORDER BY char_start LIMIT 15',
-        (doc_id,)
-    ).fetchall()
-    for r in rows:
-        print(r)
+    sql1 = f'''
+        SELECT * FROM cypher('{graph_name}', \$\$
+            MATCH ()-[r]->() RETURN DISTINCT label(r) AS edge_type, count(*) AS n
+        \$\$) AS (edge_type agtype, n agtype)
+    '''
+    print('EDGE TYPES:')
+    for row in conn.execute(sql1).fetchall():
+        print(' ', parse_agtype(row['edge_type']), parse_agtype(row['n']))
+
+    sql2 = f'''
+        SELECT * FROM cypher('{graph_name}', \$\$
+            MATCH (n) WHERE n.name =~ '.*2026.*' OR n.name =~ '.*[Dd]ate.*'
+            RETURN label(n) AS lbl, n.name AS name
+        \$\$) AS (lbl agtype, name agtype)
+    '''
+    print('DATE-LIKE NODES:')
+    for row in conn.execute(sql2).fetchall():
+        print(' ', parse_agtype(row['lbl']), parse_agtype(row['name']))
 "
