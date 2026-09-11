@@ -1,8 +1,9 @@
-
-PYTHONPATH=src python3 -c "
-from policy_twin.settings import settings
-from policy_twin.pipeline.run_all import do_geometry
-
-dsn = settings.database_url
-do_geometry(dsn)
+python3 -c "
+import json
+doc = json.load(open('data/raw/36a61c5b.../docling_XXXX.json'))
+tbl = doc['tables'][0]
+grid = tbl.get('data', {}).get('grid', [])
+print('num rows:', len(grid))
+print('row 0 type:', type(grid[0]) if grid else None)
+print(json.dumps(grid[0], indent=2) if grid else 'empty grid')
 "
