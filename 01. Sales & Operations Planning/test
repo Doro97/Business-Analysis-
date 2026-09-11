@@ -1,28 +1,16 @@
-python3 -c "
-from policy_twin.adapters.db import sync_conn
-from policy_twin.adapters.graph import age_setup_sync, parse_agtype
-
-graph_name = 'scenario_sc_941240753a'  # from your printed graph_name
-
-with sync_conn() as conn:
-    age_setup_sync(conn)
-
-    sql1 = f'''
-        SELECT * FROM cypher('{graph_name}', \$\$
-            MATCH ()-[r]->() RETURN DISTINCT label(r) AS edge_type, count(*) AS n
-        \$\$) AS (edge_type agtype, n agtype)
-    '''
-    print('EDGE TYPES:')
-    for row in conn.execute(sql1).fetchall():
-        print(' ', parse_agtype(row['edge_type']), parse_agtype(row['n']))
-
-    sql2 = f'''
-        SELECT * FROM cypher('{graph_name}', \$\$
-            MATCH (n) WHERE n.name =~ '.*2026.*' OR n.name =~ '.*[Dd]ate.*'
-            RETURN label(n) AS lbl, n.name AS name
-        \$\$) AS (lbl agtype, name agtype)
-    '''
-    print('DATE-LIKE NODES:')
-    for row in conn.execute(sql2).fetchall():
-        print(' ', parse_agtype(row['lbl']), parse_agtype(row['name']))
-"
+Dates:
+- If the document states when a policy was announced, comes/came into force,
+  or becomes/became enforced, extract a Date node and connect it to the
+  Policy with the matching edge type: announced_on, in_force_from, or
+  enforced_from.
+- Date node name: use the date as written in the source (e.g. "29 August 2023",
+  "Summer 2023 (TBC)"). Do not normalize or reformat it.
+- surface_form for the edge: the exact text stating the date relationship,
+  copy-pasted verbatim.
+- If a date is explicitly marked as provisional or unconfirmed (e.g. "TBC",
+  "proposed", "expected"), still extract the edge, and set modality to
+  "proposed" or "projected" rather than "in_force"/"enacted" -- do not drop
+  the date just because it is uncertain.
+- Do not extract a Date node for the document's own publication or
+  sign-off date unless the document explicitly states it as the date the
+  policy itself takes effect.
