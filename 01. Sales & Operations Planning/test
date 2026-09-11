@@ -1,16 +1,13 @@
-Dates:
-- If the document states when a policy was announced, comes/came into force,
-  or becomes/became enforced, extract a Date node and connect it to the
-  Policy with the matching edge type: announced_on, in_force_from, or
-  enforced_from.
-- Date node name: use the date as written in the source (e.g. "29 August 2023",
-  "Summer 2023 (TBC)"). Do not normalize or reformat it.
-- surface_form for the edge: the exact text stating the date relationship,
-  copy-pasted verbatim.
-- If a date is explicitly marked as provisional or unconfirmed (e.g. "TBC",
-  "proposed", "expected"), still extract the edge, and set modality to
-  "proposed" or "projected" rather than "in_force"/"enacted" -- do not drop
-  the date just because it is uncertain.
-- Do not extract a Date node for the document's own publication or
-  sign-off date unless the document explicitly states it as the date the
-  policy itself takes effect.
+python3 -c "
+from policy_twin.adapters.db import sync_conn
+from policy_twin.adapters.graph import age_setup_sync
+
+graph_name = 'scenario_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f'  # ULEZ DPIA scenario
+
+with sync_conn() as conn:
+    age_setup_sync(conn)
+    sql = f'''SELECT * FROM cypher('{graph_name}', \$\$ MATCH (n) DETACH DELETE n \$\$) AS (v agtype)'''
+    conn.execute(sql)
+    conn.commit()
+print('graph cleared')
+"
