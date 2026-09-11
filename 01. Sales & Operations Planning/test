@@ -1,1 +1,4 @@
-python3 -c "import ast; ast.parse(open('policy_twin/pipeline/segment.py').read())"
+table_chunks, doc_offset = _table_row_chunks(
+            doc_id, page, current_heading_path, table_data, doc_offset
+        )
+        chunks.extend(table_chunks)
