@@ -1,16 +1,16 @@
-
 python3 -c "
 from policy_twin.adapters.db import sync_conn
-from policy_twin.adapters.graph import age_setup_sync, cypher_sync
+from policy_twin.adapters.graph import age_setup_sync
+from policy_twin.adapters.graph import parse_agtype
 
 with sync_conn() as conn:
     age_setup_sync(conn)
-    rows = cypher_sync(
-        conn,
-        'MATCH ()-[r]->() RETURN DISTINCT label(r) AS edge_type, count(*) AS n',
-        ['edge_type', 'n'],
-        graph='scenario_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f',
-    )
-    for r in rows:
-        print(r)
+    sql = '''
+        SELECT * FROM cypher('scenario_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f', \$\$
+            MATCH ()-[r]->() RETURN DISTINCT label(r) AS edge_type, count(*) AS n
+        \$\$) AS (edge_type agtype, n agtype)
+    '''
+    rows = conn.execute(sql).fetchall()
+    for row in rows:
+        print(parse_agtype(row['edge_type']), parse_agtype(row['n']))
 "
