@@ -1,4 +1,20 @@
-table_chunks, doc_offset = _table_row_chunks(
-            doc_id, page, current_heading_path, table_data, doc_offset
-        )
-        chunks.extend(table_chunks)
+python3 -c "
+from policy_twin.pipeline.segment import segment_document
+result = segment_document(
+    '36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f',
+    'data/raw/36a61c5b.../docling_XXXX.json'
+)
+print(result)
+"
+
+
+python3 -c "
+from policy_twin.adapters.db import sync_conn
+with sync_conn() as conn:
+    rows = conn.execute(
+        \"SELECT chunk_id, page, text FROM text_chunk WHERE doc_id = %s AND text LIKE %s\",
+        ('36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f', '%launch date%')
+    ).fetchall()
+    for r in rows:
+        print(r)
+"
