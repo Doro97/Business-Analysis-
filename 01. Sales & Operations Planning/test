@@ -1,26 +1,18 @@
 python3 -c "
 from policy_twin.adapters.db import sync_conn
-from policy_twin.adapters.graph import age_setup_sync, parse_agtype
+
+doc_id = 'd_sc_xxxxx'  # replace with your actual doc_id from step 2
 
 with sync_conn() as conn:
-    age_setup_sync(conn)
+    n = conn.execute(
+        'SELECT count(*) FROM text_chunk WHERE doc_id = %s', (doc_id,)
+    ).fetchone()
+    print('total chunks:', n)
 
-    # Any node whose name looks like a date or contains '2023'
-    sql1 = '''
-        SELECT * FROM cypher('scenario_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f', \$\$
-            MATCH (n) WHERE n.name =~ '.*2023.*' OR n.name =~ '.*[Ll]aunch.*'
-            RETURN label(n) AS lbl, n.name AS name
-        \$\$) AS (lbl agtype, name agtype)
-    '''
-    for row in conn.execute(sql1).fetchall():
-        print('NODE:', parse_agtype(row['lbl']), parse_agtype(row['name']))
-
-    # The one 'asserts' edge -- what does it connect?
-    sql2 = '''
-        SELECT * FROM cypher('scenario_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f', \$\$
-            MATCH (s)-[r:asserts]->(t) RETURN label(s) AS slbl, s.name AS sname, label(t) AS tlbl, t.name AS tname
-        \$\$) AS (slbl agtype, sname agtype, tlbl agtype, tname agtype)
-    '''
-    for row in conn.execute(sql2).fetchall():
-        print('ASSERTS EDGE:', parse_agtype(row['slbl']), parse_agtype(row['sname']), '->', parse_agtype(row['tlbl']), parse_agtype(row['tname']))
+    rows = conn.execute(
+        'SELECT chunk_id, page, text FROM text_chunk WHERE doc_id = %s ORDER BY char_start LIMIT 15',
+        (doc_id,)
+    ).fetchall()
+    for r in rows:
+        print(r)
 "
