@@ -1,9 +1,18 @@
 python3 -c "
 import json
 doc = json.load(open('data/raw/36a61c5b.../docling_XXXX.json'))
-tbl = doc['tables'][0]
-grid = tbl.get('data', {}).get('grid', [])
-print('num rows:', len(grid))
-print('row 0 type:', type(grid[0]) if grid else None)
-print(json.dumps(grid[0], indent=2) if grid else 'empty grid')
+grid = doc['tables'][0]['data']['grid']
+for row in grid:
+    seen = set()
+    cells = []
+    for cell in row:
+        text = (cell.get('text') or '').strip()
+        if not text:
+            continue
+        anchor = (cell.get('start_row_offset_idx'), cell.get('start_col_offset_idx'))
+        if anchor in seen:
+            continue
+        seen.add(anchor)
+        cells.append(text)
+    print(' | '.join(cells))
 "
