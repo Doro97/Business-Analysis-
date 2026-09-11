@@ -1,9 +1,14 @@
 python3 -c "
-from policy_twin.adapters.db import sync_conn
-with sync_conn() as conn:
-    n = conn.execute(
-        \"SELECT count(*) FROM text_chunk WHERE doc_id = %s\",
-        ('36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f',)
-    ).fetchone()
-    print(n)
+from policy_twin.pipeline.extract_graph import extract_and_load, PROMPTS_BY_TYPE
+
+nodes, edges, rejections = extract_and_load(
+    doc_id='d_36a61c5b8abb2a10f07db5665a7aa979be0b462ed73f21a6a3db69056be9564f',
+    prompt_template=PROMPTS_BY_TYPE['impact_assessment'],
+    doc_title='london-wide-ulez-draft-data-protection-impact-assessment.pdf',
+)
+print('nodes:', len(nodes))
+print('edges:', len(edges))
+for e in edges:
+    if e['type'] in ('announced_on', 'in_force_from', 'enforced_from'):
+        print(' ->', e)
 "
