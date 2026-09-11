@@ -1,13 +1,10 @@
 python3 -c "
 from policy_twin.adapters.db import sync_conn
-from policy_twin.adapters.graph import age_setup_sync
-
-graph_name = 'scenario_sc_941240753a'  # DESNZ scenario, from the earlier 'graph_name:' printout
-
 with sync_conn() as conn:
-    age_setup_sync(conn)
-    sql = f'''SELECT * FROM cypher('{graph_name}', \$\$ MATCH (n) DETACH DELETE n \$\$) AS (v agtype)'''
-    conn.execute(sql)
-    conn.commit()
-print('graph cleared')
+    rows = conn.execute(
+        \"SELECT DISTINCT doc_id FROM text_chunk WHERE doc_id LIKE %s\",
+        ('%941240753a%',)
+    ).fetchall()
+    for r in rows:
+        print(r)
 "
