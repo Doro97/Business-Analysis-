@@ -1,1 +1,11 @@
 
+python3 -c "
+from policy_twin.adapters.db import sync_conn
+with sync_conn() as conn:
+    # All distinct (level, name) pairs at region/country/gb level
+    rows = conn.execute(
+        \"SELECT level, name, geography_id FROM geography WHERE level IN ('region','country','gb') ORDER BY level, name\"
+    ).fetchall()
+    for r in rows:
+        print(r)
+"
