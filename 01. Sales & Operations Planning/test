@@ -1,1 +1,31 @@
 
+python3 -c "
+from policy_twin.adapters.db import sync_conn
+with sync_conn() as conn:
+    n = conn.execute(
+        \"DELETE FROM fact_indicator WHERE indicator_id IN ('temp_hourly','rainfall_hourly','wind_speed_hourly') AND geography_id LIKE 'site_%'\"
+    )
+    conn.commit()
+    remaining = conn.execute(
+        \"SELECT count(*) FROM fact_indicator WHERE indicator_id IN ('temp_hourly','rainfall_hourly','wind_speed_hourly')\"
+    ).fetchone()
+    print('remaining weather rows after delete:', remaining)
+"
+
+
+python3 -c "
+from policy_twin.adapters.db import sync_conn
+from policy_twin.pipeline.weather import load_weather_for_sites
+from policy_twin.settings import settings
+
+with sync_conn() as conn:
+    rows = conn.execute(
+        \"SELECT site_id,latitude,longitude,geography_id FROM abt_site WHERE site_id IN ('25','35','39','1906')\"
+    ).fetchall()
+
+sites = [{'site_id': r['site_id'], 'latitude': r['latitude'], 'longitude': r['longitude'], 'geography_id': r['geography_id']} for r in rows]
+print('sites with real geography_id:', sites)
+
+stats = load_weather_for_sites(sites, '2025-08-01', '2025-08-07', settings.database_url)
+print(stats)
+"
