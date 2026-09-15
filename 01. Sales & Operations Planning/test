@@ -1,16 +1,1 @@
 
-python3 -c "
-from policy_twin.adapters.db import sync_conn
-with sync_conn() as conn:
-    n = conn.execute(
-        \"SELECT count(*) FROM fact_indicator WHERE indicator_id IN ('temp_hourly','rainfall_hourly','wind_speed_hourly')\"
-    ).fetchone()
-    print('total weather rows in fact_indicator:', n)
-
-    rows = conn.execute(
-        \"SELECT DISTINCT geography_id FROM fact_indicator WHERE indicator_id IN ('temp_hourly','rainfall_hourly','wind_speed_hourly') LIMIT 20\"
-    ).fetchall()
-    print('geography_ids used in weather rows:')
-    for r in rows:
-        print(' ', r)
-"
